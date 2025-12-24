@@ -2,8 +2,8 @@ use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
-    RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+    SubpassBeginInfo, SubpassContents,
 };
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
@@ -152,10 +152,7 @@ fn redraw(window_context: &mut WindowContext) {
         queue.clone(),
         window_context.pipeline.clone().unwrap(),
         &window_context.framebuffer.clone().unwrap(),
-        window_context
-            .vertex_buffer
-            .clone()
-            .unwrap(),
+        window_context.vertex_buffer.clone().unwrap(),
     );
     let swapchain = window_context.swapchain.clone().unwrap();
     let images = window_context.images.clone().unwrap();
@@ -370,28 +367,34 @@ fn create_command_buffers(
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
 
             // TODO: Wrap only draw call in unsafe
+            builder
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
+                .bind_pipeline_graphics(pipeline.clone())
+                .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
+                .bind_vertex_buffers(0, vertex_buffer.clone())
+                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
+
+            // Draw functions are marked as unsafe in vulkano as shader safety needs to be followed
+            // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
             unsafe {
                 builder
-                    .begin_render_pass(
-                        RenderPassBeginInfo {
-                            clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                        },
-                        SubpassBeginInfo {
-                            contents: SubpassContents::Inline,
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
-                    .bind_pipeline_graphics(pipeline.clone())
-                    .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                    .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
                     .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err))
-                    .end_render_pass(Default::default())
-                    .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
+                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
             }
+
+            builder
+                .end_render_pass(Default::default())
+                .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
 
             builder.build().unwrap()
         })
