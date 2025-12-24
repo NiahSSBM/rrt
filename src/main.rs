@@ -114,7 +114,7 @@ impl ApplicationHandler for App {
         self.windows = vec![Arc::new(
             event_loop
                 .create_window(Window::default_attributes())
-                .unwrap(),
+                .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
         )];
         init_vulkano(
             &mut self.window_contexts[0],
@@ -139,7 +139,7 @@ impl ApplicationHandler for App {
                 redraw(&mut self.window_contexts[0]);
                 self.windows.first().unwrap().request_redraw();
             }
-            _ => println!("Event received: {:?}", event),
+            _ => () //println!("Event received: {:?}", event),
         }
     }
 }
@@ -366,7 +366,6 @@ fn create_command_buffers(
             )
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
 
-            // TODO: Wrap only draw call in unsafe
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
@@ -469,7 +468,6 @@ fn create_frame_buffer(
 fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let window_context = window_context;
     let window = window
-        //.expect("Attempted to initialize vulkan with no window!")
         .clone();
     let vulkan_instance = window_context
         .vulkan_instance
@@ -498,15 +496,12 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let queues: Vec<Arc<Queue>> = queues.collect();
     window_context.queues = Some(queues.clone());
     window_context.device = Some(device.clone());
-    println!("Successfully created graphics device: {:?}", device);
-    for queue in &queues {
-        println!("Successfully created graphics queue: {:?}", queue);
-    }
+    println!("Successfully created graphics device");
 
     // Create the surface fom the window provided by winit
     let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
         .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
-    println!("Successfully created surface: {:?}", surface);
+    println!("Successfully created surface");
 
     // Create the swapchain and images
     let surface_capabilities = selected_device
@@ -517,27 +512,23 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
             .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
     window_context.swapchain = Some(swapchain.clone());
     window_context.images = Some(swapchain_images.clone());
-    println!("Successfully created swapchain: {:?}", swapchain);
-    println!(
-        "Successfully created swapchain images: {:?}",
-        swapchain_images.clone()
-    );
+    println!("Successfully created swapchain");
 
     // Create render pass
     let render_pass = create_render_pass(device.clone(), swapchain.clone())
         .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
-    println!("Successfully created render pass: {:?}", render_pass);
+    println!("Successfully created render pass");
 
     // Create image view
     let image_views = create_image_views(swapchain_images.clone());
     image_views
         .iter()
-        .for_each(|image_view| println!("Successfully created image veiw: {:?}", image_view));
+        .for_each(|image_view| println!("Successfully created image veiw"));
 
     // Create frame buffer
     let framebuffer = create_frame_buffer(render_pass.clone(), image_views);
     window_context.framebuffer = Some(framebuffer.clone());
-    println!("Successfully created framebuffer: {:?}", framebuffer);
+    println!("Successfully created framebuffer");
 
     // Create graphics pipeline
     let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
@@ -550,7 +541,7 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let pipeline = create_pipeline(device.clone(), vs, fs, render_pass, viewport)
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
     window_context.pipeline = Some(pipeline.clone());
-    println!("Successfully created graphics pipeline: {:?}", pipeline);
+    println!("Successfully created graphics pipeline");
 
     // Create vertex buffer
     let vertex1 = MyVertex {
