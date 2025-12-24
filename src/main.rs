@@ -1,4 +1,6 @@
+use std::io::pipe;
 use std::sync::Arc;
+use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::{
     StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
 };
@@ -16,7 +18,18 @@ use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{self, Image, ImageAspects, ImageSubresourceRange, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass};
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
+use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
+use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::multisample::MultisampleState;
+use vulkano::pipeline::graphics::rasterization::RasterizationState;
+use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
+use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::shader::ShaderModule;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -38,6 +51,13 @@ struct App {
     window_contexts: Vec<WindowContext>,
 }
 
+#[derive(BufferContents, Vertex)]
+#[repr(C)]
+struct MyVertex {
+    #[format(R32G32_SFLOAT)]
+    position: [f32; 2],
+}
+
 #[derive(Default)]
 struct WindowContext {
     vulkan_instance: Option<Arc<Instance>>,
@@ -45,11 +65,43 @@ struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
+    pipelines: Option<Vec<Arc<GraphicsPipeline>>>,
+    vertex_buffers: Option<Vec<Subbuffer<[MyVertex]>>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
     previous_fence_i: u32,
     resume_count: u32,
+}
+
+mod vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: r"
+            #version 460
+
+            layout(location = 0) in vec2 position;
+
+            void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        ",
+    }
+}
+
+mod fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+            #version 460
+
+            layout(location = 0) out vec4 f_color;
+
+            void main() {
+                f_color = vec4(1.0, 0.0, 0.0, 1.0);
+            }
+        ",
+    }
 }
 
 impl ApplicationHandler for App {
@@ -100,9 +152,15 @@ fn redraw(window_context: &mut WindowContext) {
     let command_buffers = create_command_buffers(
         window_context.command_buffer_allocator.clone().unwrap(),
         window_context.queues.clone().unwrap().first().unwrap(),
+        window_context.pipelines.clone().unwrap().first().unwrap(),
         &window_context.framebuffer.clone().unwrap(),
+        window_context
+            .vertex_buffers
+            .clone()
+            .unwrap()
+            .first()
+            .unwrap(),
     );
-    //.unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
     let queues = window_context.queues.clone().unwrap();
     let queue = queues.first().unwrap();
     //let framebuffer = window_context.framebuffer.clone().unwrap();
@@ -233,8 +291,8 @@ fn create_swapchain(
         image_format: Format::R8G8B8A8_SRGB,
         image_view_formats: Default::default(),
         image_color_space: ColorSpace::SrgbNonLinear,
-        //TODO: imager_extent should be the same size as the window
-        image_extent: [100, 100],
+        //TODO: image_extent should be the same size as the window
+        image_extent: [800, 600],
         image_array_layers: 1,
         image_usage: ImageUsage::COLOR_ATTACHMENT,
         image_sharing: Sharing::Exclusive,
@@ -252,12 +310,61 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
+fn create_pipeline(
+    device: Arc<Device>,
+    vs: Arc<ShaderModule>,
+    fs: Arc<ShaderModule>,
+    render_pass: Arc<RenderPass>,
+    viewport: Viewport,
+) -> Result<Arc<GraphicsPipeline>, Validated<VulkanError>> {
+    let vs = vs.entry_point("main").unwrap();
+    let fs = fs.entry_point("main").unwrap();
+
+    let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
+
+    let stages = [
+        PipelineShaderStageCreateInfo::new(vs),
+        PipelineShaderStageCreateInfo::new(fs),
+    ];
+
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .unwrap(),
+    )?;
+
+    let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+
+    GraphicsPipeline::new(
+        device.clone(),
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(vertex_input_state),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState {
+                viewports: [viewport].into_iter().collect(),
+                ..Default::default()
+            }),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                subpass.num_color_attachments(),
+                ColorBlendAttachmentState::default(),
+            )),
+            subpass: Some(subpass.into()),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+}
+
 fn create_command_buffers(
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     queue: &Arc<Queue>,
-    //pipeline: &Arc<GraphicsPipeline>,
+    pipeline: &Arc<GraphicsPipeline>,
     framebuffers: &[Arc<Framebuffer>],
-    //vertex_buffer: &Subbuffer<[MyVertex]>,
+    vertex_buffer: &Subbuffer<[MyVertex]>,
 ) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     framebuffers
         .iter()
@@ -269,20 +376,29 @@ fn create_command_buffers(
             )
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
 
-            builder
-                .begin_render_pass(
-                    RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                    },
-                    SubpassBeginInfo {
-                        contents: SubpassContents::Inline,
-                        ..Default::default()
-                    },
-                )
-                .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
-                .end_render_pass(Default::default())
-                .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
+            // TODO: Wrap only draw call in unsafe
+            unsafe {
+                builder
+                    .begin_render_pass(
+                        RenderPassBeginInfo {
+                            clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                        },
+                        SubpassBeginInfo {
+                            contents: SubpassContents::Inline,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
+                    .bind_pipeline_graphics(pipeline.clone())
+                    .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
+                    .bind_vertex_buffers(0, vertex_buffer.clone())
+                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
+                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
+                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err))
+                    .end_render_pass(Default::default())
+                    .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
+            }
 
             builder.build().unwrap()
         })
@@ -423,9 +539,49 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
         .for_each(|image_view| println!("Successfully created image veiw: {:?}", image_view));
 
     // Create frame buffer
-    let framebuffer = create_frame_buffer(render_pass, image_views);
+    let framebuffer = create_frame_buffer(render_pass.clone(), image_views);
     window_context.framebuffer = Some(framebuffer.clone());
     println!("Successfully created framebuffer: {:?}", framebuffer);
+
+    // Create graphics pipeline
+    let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
+    let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
+    let viewport = Viewport {
+        offset: [0.0, 0.0],
+        extent: window.inner_size().into(),
+        depth_range: 0.0..=1.0,
+    };
+    let pipeline = create_pipeline(device.clone(), vs, fs, render_pass, viewport)
+        .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
+    window_context.pipelines = Some(vec![(pipeline.clone())]);
+    println!("Successfully created graphics pipeline: {:?}", pipeline);
+
+    // Create vertex buffer
+    let vertex1 = MyVertex {
+        position: [-0.5, -0.5],
+    };
+    let vertex2 = MyVertex {
+        position: [0.0, 0.5],
+    };
+    let vertex3 = MyVertex {
+        position: [0.5, -0.25],
+    };
+    let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+    let vertex_buffer = Buffer::from_iter(
+        vertex_memory_allocator,
+        BufferCreateInfo {
+            usage: BufferUsage::VERTEX_BUFFER,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        vec![vertex1, vertex2, vertex3],
+    )
+    .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
+    window_context.vertex_buffers = Some(vec![vertex_buffer.clone()]);
 
     // Create command buffer
     let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
@@ -437,9 +593,10 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let command_buffers = create_command_buffers(
         command_buffer_allocator,
         queues.first().unwrap(),
+        &pipeline,
         &framebuffer,
+        &vertex_buffer,
     );
-    //.unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
     println!("Successfully created command buffer");
     window_context.command_buffers = Some(command_buffers);
 }
