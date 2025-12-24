@@ -1,21 +1,18 @@
-use std::io::pipe;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
-use vulkano::command_buffer::allocator::{
-    StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
-};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
-    PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+    RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
 };
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateFlags, QueueCreateInfo,
 };
-use vulkano::format::{ClearValue, Format};
+use vulkano::format::Format;
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
-use vulkano::image::{self, Image, ImageAspects, ImageSubresourceRange, ImageUsage};
+use vulkano::image::{Image, ImageAspects, ImageSubresourceRange, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
@@ -37,7 +34,6 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
-use winit::window;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -65,8 +61,8 @@ struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
-    pipelines: Option<Vec<Arc<GraphicsPipeline>>>,
-    vertex_buffers: Option<Vec<Subbuffer<[MyVertex]>>>,
+    pipeline: Option<Arc<GraphicsPipeline>>,
+    vertex_buffer: Option<Subbuffer<[MyVertex]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
@@ -149,21 +145,18 @@ impl ApplicationHandler for App {
 }
 
 fn redraw(window_context: &mut WindowContext) {
+    let queues = window_context.queues.as_ref().unwrap();
+    let queue = &queues[0];
     let command_buffers = create_command_buffers(
         window_context.command_buffer_allocator.clone().unwrap(),
-        window_context.queues.clone().unwrap().first().unwrap(),
-        window_context.pipelines.clone().unwrap().first().unwrap(),
+        queue.clone(),
+        window_context.pipeline.clone().unwrap(),
         &window_context.framebuffer.clone().unwrap(),
         window_context
-            .vertex_buffers
+            .vertex_buffer
             .clone()
-            .unwrap()
-            .first()
             .unwrap(),
     );
-    let queues = window_context.queues.clone().unwrap();
-    let queue = queues.first().unwrap();
-    //let framebuffer = window_context.framebuffer.clone().unwrap();
     let swapchain = window_context.swapchain.clone().unwrap();
     let images = window_context.images.clone().unwrap();
 
@@ -361,10 +354,10 @@ fn create_pipeline(
 
 fn create_command_buffers(
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    queue: &Arc<Queue>,
-    pipeline: &Arc<GraphicsPipeline>,
+    queue: Arc<Queue>,
+    pipeline: Arc<GraphicsPipeline>,
     framebuffers: &[Arc<Framebuffer>],
-    vertex_buffer: &Subbuffer<[MyVertex]>,
+    vertex_buffer: Subbuffer<[MyVertex]>,
 ) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     framebuffers
         .iter()
@@ -553,7 +546,7 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     };
     let pipeline = create_pipeline(device.clone(), vs, fs, render_pass, viewport)
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
-    window_context.pipelines = Some(vec![(pipeline.clone())]);
+    window_context.pipeline = Some(pipeline.clone());
     println!("Successfully created graphics pipeline: {:?}", pipeline);
 
     // Create vertex buffer
@@ -581,7 +574,7 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
         vec![vertex1, vertex2, vertex3],
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
-    window_context.vertex_buffers = Some(vec![vertex_buffer.clone()]);
+    window_context.vertex_buffer = Some(vertex_buffer.clone());
 
     // Create command buffer
     let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
@@ -592,10 +585,10 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
 
     let command_buffers = create_command_buffers(
         command_buffer_allocator,
-        queues.first().unwrap(),
-        &pipeline,
+        queues[0].clone(),
+        pipeline,
         &framebuffer,
-        &vertex_buffer,
+        vertex_buffer,
     );
     println!("Successfully created command buffer");
     window_context.command_buffers = Some(command_buffers);
