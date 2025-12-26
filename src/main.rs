@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -32,7 +33,7 @@ use vulkano::swapchain::{
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
 };
 use vulkano::sync::future::FenceSignalFuture;
-use vulkano::sync::{self, GpuFuture, Sharing};
+use vulkano::sync::{self, GpuFuture, Sharing, event};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::{
     application::ApplicationHandler,
@@ -45,6 +46,7 @@ use winit::{
 struct App {
     windows: Vec<Arc<Window>>,
     window_contexts: Vec<WindowContext>,
+    resume_count: u32,
 }
 
 #[derive(BufferContents, Vertex)]
@@ -67,7 +69,6 @@ struct WindowContext {
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
     previous_fence_i: u32,
-    resume_count: u32,
 }
 
 mod vs {
@@ -102,24 +103,24 @@ mod fs {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let mut resume_count = self.window_contexts.first().unwrap().resume_count;
-        resume_count += 1;
-        if resume_count > 1 {
+        self.resume_count += 1;
+        if self.resume_count > 1 {
             println!(
                 "Resume requested {} times, not recreating window and not resuming",
-                resume_count
+                self.resume_count
             );
             return;
         }
-        self.windows = vec![Arc::new(
-            event_loop
-                .create_window(Window::default_attributes())
-                .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
-        )];
-        init_vulkano(
-            &mut self.window_contexts[0],
-            self.windows.first().unwrap().clone(),
-        );
+        assert!(self.windows.len() == 0, "Windows already exist!");
+        for i in 0..self.window_contexts.len() {
+            let window = Arc::new(
+                event_loop
+                    .create_window(Window::default_attributes())
+                    .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
+            );
+            self.windows.push(window);
+            init_vulkano(&mut self.window_contexts[i], self.windows[i].clone());
+        }
         // This locks up the thread
         //self.window.first().unwrap().pre_present_notify();
     }
@@ -127,19 +128,25 @@ impl ApplicationHandler for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
-                event_loop.exit();
+        let mut i = 0;
+        for window in &mut self.windows {
+            if window_id == window.id() {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        println!("The close button was pressed; stopping");
+                        event_loop.exit();
+                    }
+                    WindowEvent::RedrawRequested => {
+                        redraw(&mut self.window_contexts[i]);
+                        window.request_redraw();
+                    }
+                    _ => (), //println!("Event received: {:?}", event),
+                }
             }
-            WindowEvent::RedrawRequested => {
-                redraw(&mut self.window_contexts[0]);
-                self.windows.first().unwrap().request_redraw();
-            }
-            _ => () //println!("Event received: {:?}", event),
+            i += 1;
         }
     }
 }
@@ -467,8 +474,7 @@ fn create_frame_buffer(
 
 fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let window_context = window_context;
-    let window = window
-        .clone();
+    let window = window.clone();
     let vulkan_instance = window_context
         .vulkan_instance
         .as_ref()
@@ -608,10 +614,17 @@ fn main() {
     .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
 
     let mut app = App {
-        window_contexts: vec![WindowContext {
-            vulkan_instance: Some(vulkan_instance),
-            ..Default::default()
-        }],
+        window_contexts: vec![
+            WindowContext {
+                vulkan_instance: Some(vulkan_instance.clone()),
+                ..Default::default()
+            },
+            WindowContext {
+                // Creating a second window context just as a test for now
+                vulkan_instance: Some(vulkan_instance),
+                ..Default::default()
+            },
+        ],
         ..Default::default()
     };
     event_loop.run_app(&mut app).unwrap_or_else(|err| {
