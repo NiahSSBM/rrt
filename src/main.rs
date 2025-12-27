@@ -11,22 +11,23 @@ use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateFlags, QueueCreateInfo,
 };
 use vulkano::format::Format;
+use vulkano::image::ImageLayout::PresentSrc;
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{Image, ImageAspects, ImageSubresourceRange, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::graphics::{GraphicsPipelineCreateInfo, viewport};
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
 use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::render_pass::{self, Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderModule;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -35,6 +36,7 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing, event};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
+use winit::dpi::PhysicalSize;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -44,7 +46,7 @@ use winit::{
 
 #[derive(Default)]
 struct App {
-    windows: Vec<Arc<Window>>,
+    //windows: Vec<Arc<Window>>,
     window_contexts: Vec<WindowContext>,
     resume_count: u32,
 }
@@ -58,6 +60,7 @@ struct MyVertex {
 
 #[derive(Default)]
 struct WindowContext {
+    window: Option<Arc<Window>>,
     vulkan_instance: Option<Arc<Instance>>,
     device: Option<Arc<Device>>,
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
@@ -68,7 +71,13 @@ struct WindowContext {
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
+    render_pass: Option<Arc<RenderPass>>,
+    vs: Option<Arc<ShaderModule>>,
+    fs: Option<Arc<ShaderModule>>,
     previous_fence_i: u32,
+    resized: bool,
+    recreate_swapchain: bool,
+    viewport: Viewport,
 }
 
 mod vs {
@@ -111,15 +120,14 @@ impl ApplicationHandler for App {
             );
             return;
         }
-        assert!(self.windows.len() == 0, "Windows already exist!");
         for i in 0..self.window_contexts.len() {
             let window = Arc::new(
                 event_loop
                     .create_window(Window::default_attributes())
                     .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
             );
-            self.windows.push(window);
-            init_vulkano(&mut self.window_contexts[i], self.windows[i].clone());
+            self.window_contexts[i].window = Some(window);
+            init_vulkano(&mut self.window_contexts[i]);
         }
         // This locks up the thread
         //self.window.first().unwrap().pre_present_notify();
@@ -132,7 +140,8 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         let mut i = 0;
-        for window in &mut self.windows {
+        for window_context in &mut self.window_contexts {
+            let window = window_context.window.clone().unwrap();
             if window_id == window.id() {
                 match event {
                     WindowEvent::CloseRequested => {
@@ -140,8 +149,21 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-                        redraw(&mut self.window_contexts[i]);
+                        if window_context.resized || window_context.recreate_swapchain {
+                            window_context.recreate_swapchain = false;
+                            recreate_swapchain(window_context);
+
+                            if window_context.resized {
+                                window_context.resized = false;
+                                resize_window(window_context);
+                            }
+                        }
+
+                        redraw(window_context);
                         window.request_redraw();
+                    }
+                    WindowEvent::Resized(size) => {
+                        window_context.resized = true;
                     }
                     _ => (), //println!("Event received: {:?}", event),
                 }
@@ -149,6 +171,44 @@ impl ApplicationHandler for App {
             i += 1;
         }
     }
+}
+
+fn recreate_swapchain(window_context: &mut WindowContext) {
+    let (new_swapchain, new_images) = window_context
+        .swapchain
+        .as_ref()
+        .unwrap()
+        .recreate(SwapchainCreateInfo {
+            image_extent: window_context.window.as_ref().unwrap().inner_size().into(),
+            ..window_context.swapchain.as_ref().unwrap().create_info()
+        })
+        .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
+
+    window_context.swapchain = Some(new_swapchain);
+    let new_framebuffers =
+        create_frame_buffer(window_context.render_pass.clone().unwrap(), new_images);
+    window_context.framebuffer = Some(new_framebuffers);
+}
+
+fn resize_window(window_context: &mut WindowContext) {
+    window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
+    let new_pipeline = create_pipeline(
+        window_context.device.clone().unwrap(),
+        window_context.vs.clone().unwrap(),
+        window_context.fs.clone().unwrap(),
+        window_context.render_pass.clone().unwrap(),
+        window_context.viewport.clone(),
+    )
+    .unwrap_or_else(|err| panic!("Failed to create new pipeline: {:?}", err));
+    window_context.pipeline = Some(new_pipeline.clone());
+    let new_command_buffers = create_command_buffers(
+        window_context.command_buffer_allocator.clone().unwrap(),
+        window_context.queues.clone().unwrap()[0].clone(),
+        new_pipeline,
+        window_context.framebuffer.as_ref().unwrap(),
+        window_context.vertex_buffer.clone().unwrap(),
+    );
+    window_context.command_buffers = Some(new_command_buffers);
 }
 
 fn redraw(window_context: &mut WindowContext) {
@@ -169,6 +229,10 @@ fn redraw(window_context: &mut WindowContext) {
             Ok(r) => r,
             Err(err) => panic!("Failed to acquire next image: {err}"),
         };
+
+    if suboptimal {
+        window_context.recreate_swapchain = true;
+    }
 
     let frames_in_flight = images.len();
     let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
@@ -199,7 +263,7 @@ fn redraw(window_context: &mut WindowContext) {
     fences[image_i as usize] = match future.map_err(Validated::unwrap) {
         Ok(value) => Some(Arc::new(value)),
         Err(VulkanError::OutOfDate) => {
-            //recreate_swapchain = true;
+            window_context.recreate_swapchain = true;
             None
         }
         Err(e) => {
@@ -373,6 +437,11 @@ fn create_command_buffers(
             )
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
 
+            //println!("Render pass right before building: {:#?}", RenderPassBeginInfo {
+            //            clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+            //            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+            //        });
+            // Looks like I'm making a unique render pass when beginning the render pass
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
@@ -419,6 +488,8 @@ fn create_render_pass(
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,
+                initial_layout: PresentSrc,
+                final_layout: PresentSrc
             },
         },
         pass: {
@@ -428,8 +499,11 @@ fn create_render_pass(
     )
 }
 
-fn create_image_views(swapchain_images: Vec<Arc<Image>>) -> Vec<Arc<ImageView>> {
-    swapchain_images
+fn create_frame_buffer(
+    render_pass: Arc<RenderPass>,
+    images: Vec<Arc<Image>>,
+) -> Vec<Arc<Framebuffer>> {
+    let image_views: Vec<Arc<ImageView>> = images
         .iter()
         .map(|image| {
             ImageView::new(
@@ -450,13 +524,8 @@ fn create_image_views(swapchain_images: Vec<Arc<Image>>) -> Vec<Arc<ImageView>> 
             )
             .unwrap_or_else(|err| panic!("Could not create image view from image: {:?}", err))
         })
-        .collect()
-}
+        .collect();
 
-fn create_frame_buffer(
-    render_pass: Arc<RenderPass>,
-    image_views: Vec<Arc<ImageView>>,
-) -> Vec<Arc<Framebuffer>> {
     image_views
         .iter()
         .map(|image| {
@@ -472,9 +541,9 @@ fn create_frame_buffer(
         .collect()
 }
 
-fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
+fn init_vulkano(window_context: &mut WindowContext) {
     let window_context = window_context;
-    let window = window.clone();
+    let window = window_context.window.clone().unwrap();
     let vulkan_instance = window_context
         .vulkan_instance
         .as_ref()
@@ -524,26 +593,24 @@ fn init_vulkano(window_context: &mut WindowContext, window: Arc<Window>) {
     let render_pass = create_render_pass(device.clone(), swapchain.clone())
         .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
     println!("Successfully created render pass");
-
-    // Create image view
-    let image_views = create_image_views(swapchain_images.clone());
-    image_views
-        .iter()
-        .for_each(|image_view| println!("Successfully created image veiw"));
+    window_context.render_pass = Some(render_pass.clone());
 
     // Create frame buffer
-    let framebuffer = create_frame_buffer(render_pass.clone(), image_views);
+    let framebuffer = create_frame_buffer(render_pass.clone(), swapchain_images.clone());
     window_context.framebuffer = Some(framebuffer.clone());
     println!("Successfully created framebuffer");
 
     // Create graphics pipeline
     let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
     let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
+    window_context.vs = Some(vs.clone());
+    window_context.fs = Some(fs.clone());
     let viewport = Viewport {
         offset: [0.0, 0.0],
         extent: window.inner_size().into(),
         depth_range: 0.0..=1.0,
     };
+    window_context.viewport = viewport.clone();
     let pipeline = create_pipeline(device.clone(), vs, fs, render_pass, viewport)
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
     window_context.pipeline = Some(pipeline.clone());
@@ -619,11 +686,11 @@ fn main() {
                 vulkan_instance: Some(vulkan_instance.clone()),
                 ..Default::default()
             },
-            WindowContext {
-                // Creating a second window context just as a test for now
-                vulkan_instance: Some(vulkan_instance),
-                ..Default::default()
-            },
+            //WindowContext {
+            //    // Creating a second window context just as a test for now
+            //    vulkan_instance: Some(vulkan_instance),
+            //    ..Default::default()
+            //},
         ],
         ..Default::default()
     };
