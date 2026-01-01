@@ -59,7 +59,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::vs::vOutput;
+use crate::vs::vColor;
 
 #[derive(Default)]
 struct App {
@@ -85,7 +85,7 @@ struct WindowContext {
     queues: Option<Vec<Arc<Queue>>>,
     pipeline: Option<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
-    device_buffer: Option<Subbuffer<vOutput>>,
+    device_buffer: Option<Subbuffer<vColor>>,
     descriptor_sets: Option<DescriptorSetWithOffsets>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
@@ -102,44 +102,14 @@ struct WindowContext {
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        src: r"
-            #version 460
-
-            layout(location = 0) in vec2 position;
-            layout(location = 0) out vec3 fragColor;
-            layout(binding = 0) buffer vOutput {
-                vec3 color;
-                vec4 sv_position;
-            } vOut;
-
-            void main() {
-                vec3 colors[3] = vec3[](
-                    vec3(1.0, 0.0, 0.0),
-                    vec3(0.0, 1.0, 0.0),
-                    vec3(0.0, 0.0, 1.0)
-                );
-                gl_Position = vec4(position, 0.0, 1.0);
-                fragColor = colors[gl_VertexIndex];
-            }
-        ",
-        generate_structs: true
+        path: "shaders/vert.glsl",
     }
 }
 
 mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        src: r"
-            #version 460
-
-            layout(location = 0) in vec3 fragColor;
-            layout(location = 0) out vec4 f_color;
-
-            void main() {
-                f_color = vec4(fragColor, 1.0);
-            }
-        ",
-        generate_structs: true
+        path: "shaders/frag.glsl",
     }
 }
 
@@ -413,13 +383,6 @@ fn create_pipeline(
 
     let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
     let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
-    // The below commented code is required if a descriptor type is DescriptorType::Sampler or DescriptorType::CombinedImageSampler
-    //let mut samplers: Vec<Arc<Sampler>> = Vec::new();
-    //let sampler = Sampler::new(
-    //    device.clone(),
-    //    SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-    //).unwrap();
-    //samplers.push(sampler);
     let binding = DescriptorSetLayoutBinding {
         descriptor_count: 1,
         stages: ShaderStages::all_graphics(),
@@ -436,9 +399,10 @@ fn create_pipeline(
         let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
         descriptor_set_layouts.push(layout);
     }
-    let data = vs::vOutput {
-        color: [0.0; 3].into(),
-        sv_position: [0.0; 4].into(),
+    let data = vs::vColor {
+        colors: [[1.0, 0.0, 0.0].into(),
+                [0.0, 1.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into()]
     };
 
     let allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
@@ -457,7 +421,7 @@ fn create_pipeline(
     )
     .unwrap();
 
-    let device_buffer: Subbuffer<vOutput> = Buffer::new_sized(
+    let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
         allocator.clone(),
         BufferCreateInfo {
             usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
@@ -483,14 +447,6 @@ fn create_pipeline(
     )
     .unwrap();
     let descriptor_sets = DescriptorSetWithOffsets::new(descriptor_set, []);
-
-    //let mut push_constant_ranges: Vec<PushConstantRange> = Vec::new();
-    //let range = PushConstantRange {
-    //    stages: ShaderStages::all_graphics(),
-    //    offset: 0,
-    //    size: size_of::<vs::vOutput>() as u32,
-    //};
-    //push_constant_ranges.push(range);
 
     window_context.descriptor_sets = Some(descriptor_sets.clone());
     window_context.device_buffer = Some(device_buffer.clone());
