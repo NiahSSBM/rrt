@@ -36,14 +36,14 @@ use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorB
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
+use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition, VertexInputState};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::layout::{PipelineLayoutCreateFlags, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{ShaderModule, ShaderStages};
+use vulkano::shader::{EntryPoint, ShaderModule, ShaderStages};
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -63,16 +63,21 @@ use crate::vs::vColor;
 
 #[derive(Default)]
 struct App {
-    //windows: Vec<Arc<Window>>,
     window_contexts: Vec<WindowContext>,
     resume_count: u32,
 }
 
-#[derive(BufferContents, Vertex)]
+#[derive(BufferContents, Vertex, Clone)]
 #[repr(C)]
 struct MyVertex {
     #[format(R32G32_SFLOAT)]
     position: [f32; 2],
+}
+
+#[derive(Clone)]
+struct Mesh {
+    verticies: Vec<MyVertex>,
+    shaders: Shaders,
 }
 
 #[derive(Default)]
@@ -83,20 +88,19 @@ struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
-    pipeline: Option<Arc<GraphicsPipeline>>,
-    vertex_buffer: Option<Subbuffer<[MyVertex]>>,
-    device_buffer: Option<Subbuffer<vColor>>,
-    descriptor_sets: Option<DescriptorSetWithOffsets>,
+    pipelines: Vec<Arc<GraphicsPipeline>>,
+    vertex_buffers: Vec<Subbuffer<[MyVertex]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
     render_pass: Option<Arc<RenderPass>>,
-    vs: Option<Arc<ShaderModule>>,
-    fs: Option<Arc<ShaderModule>>,
+    meshes: Vec<Mesh>,
     previous_fence_i: u32,
     resized: bool,
     recreate_swapchain: bool,
     viewport: Viewport,
+    default_vs: Option<Arc<ShaderModule>>,
+    default_fs: Option<Arc<ShaderModule>>,
 }
 
 mod vs {
@@ -110,6 +114,37 @@ mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/frag.glsl",
+    }
+}
+
+mod vs_default {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        path: "shaders/vert.glsl",
+    }
+}
+
+mod fs_default {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        path: "shaders/frag.glsl",
+    }
+}
+
+#[derive(Clone)]
+struct Shaders {
+    vs: Arc<ShaderModule>,
+    fs: Arc<ShaderModule>,
+    descriptor_set: Option<DescriptorSetWithOffsets>,
+}
+
+impl Shaders {
+    fn load(device: Arc<Device>) -> Result<Self, Validated<VulkanError>> {
+        Ok(Self {
+            vs: vs::load(device.clone())?,
+            fs: fs::load(device.clone())?,
+            descriptor_set: None,
+        })
     }
 }
 
@@ -193,9 +228,11 @@ fn recreate_swapchain(window_context: &mut WindowContext) {
 
 fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
-    let new_pipeline = create_pipeline(window_context)
-        .unwrap_or_else(|err| panic!("Failed to create new pipeline: {:?}", err));
-    window_context.pipeline = Some(new_pipeline.clone());
+    let new_pipelines = create_pipelines(window_context);
+    if window_context.pipelines.is_empty() {
+        panic!("No pipelines were created!");
+    }
+    window_context.pipelines = new_pipelines.clone();
     let new_command_buffers = create_command_buffers(window_context);
     window_context.command_buffers = Some(new_command_buffers);
 }
@@ -357,166 +394,171 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
-fn create_pipeline(
+fn create_pipelines(
     window_context: &mut WindowContext,
-) -> Result<Arc<GraphicsPipeline>, Validated<VulkanError>> {
+) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
-    let vs = window_context
-        .vs
-        .as_ref()
-        .unwrap()
-        .entry_point("main")
-        .unwrap();
-    let fs = window_context
-        .fs
-        .as_ref()
-        .unwrap()
-        .entry_point("main")
-        .unwrap();
+    let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
-    let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
-
-    let stages = [
-        PipelineShaderStageCreateInfo::new(vs),
-        PipelineShaderStageCreateInfo::new(fs),
-    ];
-
-    let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
-    let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
-    let binding = DescriptorSetLayoutBinding {
-        descriptor_count: 1,
-        stages: ShaderStages::all_graphics(),
-        immutable_samplers: Vec::new(),
-        ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
-    };
-    for i in 0..stages.len() {
-        bindings.insert(i as u32, binding.clone());
-        let create_info = DescriptorSetLayoutCreateInfo {
-            flags: Default::default(),
-            bindings: bindings.clone(),
-            ..Default::default()
-        };
-        let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
-        descriptor_set_layouts.push(layout);
+    if window_context.meshes.is_empty() {
+        println!("Warning: No meshes to load!");
     }
-    let data = vs::vColor {
-        colors: [[1.0, 0.0, 0.0].into(),
-                [0.0, 1.0, 0.0].into(),
-                [0.0, 0.0, 1.0].into()]
-    };
 
-    let allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
-    let host_buffer = Buffer::from_data(
-        allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        data,
-    )
-    .unwrap();
+    for mesh in &mut window_context.meshes {
+        let vs = mesh.shaders.vs.entry_point("main").unwrap();
+        let fs = mesh.shaders.fs.entry_point("main").unwrap();
 
-    let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
-        allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
-    let allocator = Arc::new(StandardDescriptorSetAllocator::new(
-        device.clone(),
-        StandardDescriptorSetAllocatorCreateInfo::default(),
-    ));
-    let descriptor_set = DescriptorSet::new_variable(
-        allocator,
-        descriptor_set_layouts[0].clone(),
-        descriptor_set_layouts[0].variable_descriptor_count(),
-        vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
-        vec![],
-    )
-    .unwrap();
-    let descriptor_sets = DescriptorSetWithOffsets::new(descriptor_set, []);
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
 
-    window_context.descriptor_sets = Some(descriptor_sets.clone());
-    window_context.device_buffer = Some(device_buffer.clone());
-
-    let pipeline_layout = PipelineLayout::new(
-        device.clone(),
-        PipelineLayoutCreateInfo {
-            flags: PipelineLayoutCreateFlags::default(),
-            set_layouts: descriptor_set_layouts,
-            push_constant_ranges: Vec::new(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    let mut cbb = AutoCommandBufferBuilder::primary(
-        window_context
-            .command_buffer_allocator
-            .as_ref()
-            .unwrap()
-            .clone(),
-        window_context.queues.as_ref().unwrap()[0].queue_family_index(),
-        CommandBufferUsage::OneTimeSubmit,
-    )
-    .unwrap();
-    cbb.copy_buffer(CopyBufferInfo::buffers(host_buffer, device_buffer.clone()))
-        .unwrap();
-    cbb.bind_descriptor_sets(
-        PipelineBindPoint::Graphics,
-        pipeline_layout.clone(),
-        0,
-        descriptor_sets,
-    )
-    .unwrap();
-    let cb = cbb.build().unwrap();
-    cb.execute(window_context.queues.as_ref().unwrap()[0].clone())
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap()
-        .wait(None)
-        .unwrap();
-
-    let subpass = Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
-
-    GraphicsPipeline::new(
-        device.clone(),
-        None,
-        GraphicsPipelineCreateInfo {
-            stages: stages.into_iter().collect(),
-            vertex_input_state: Some(vertex_input_state),
-            input_assembly_state: Some(InputAssemblyState::default()),
-            viewport_state: Some(ViewportState {
-                viewports: [window_context.viewport.clone()].into_iter().collect(),
+        let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
+        let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
+        let binding = DescriptorSetLayoutBinding {
+            descriptor_count: 1,
+            stages: ShaderStages::all_graphics(),
+            immutable_samplers: Vec::new(),
+            ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
+        };
+        for i in 0..stages.len() {
+            bindings.insert(i as u32, binding.clone());
+            let create_info = DescriptorSetLayoutCreateInfo {
+                flags: Default::default(),
+                bindings: bindings.clone(),
                 ..Default::default()
-            }),
-            rasterization_state: Some(RasterizationState::default()),
-            multisample_state: Some(MultisampleState::default()),
-            color_blend_state: Some(ColorBlendState::with_attachment_states(
-                subpass.num_color_attachments(),
-                ColorBlendAttachmentState::default(),
-            )),
-            subpass: Some(subpass.into()),
-            ..GraphicsPipelineCreateInfo::layout(pipeline_layout)
-        },
-    )
+            };
+            let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
+            descriptor_set_layouts.push(layout);
+        }
+        let mut data = vs::vColor {
+            colors: [
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 1.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ],
+        };
+
+        let allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
+        let host_buffer = Buffer::from_data(
+            allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data,
+        )
+        .unwrap();
+
+        let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
+            allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            device.clone(),
+            StandardDescriptorSetAllocatorCreateInfo::default(),
+        ));
+        let descriptor_set = DescriptorSet::new_variable(
+            allocator,
+            descriptor_set_layouts[0].clone(),
+            descriptor_set_layouts[0].variable_descriptor_count(),
+            vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
+            vec![],
+        )
+        .unwrap();
+        let descriptor_sets = DescriptorSetWithOffsets::new(descriptor_set, []);
+
+        mesh.shaders.descriptor_set = Some(descriptor_sets.clone());
+
+        let pipeline_layout = PipelineLayout::new(
+            device.clone(),
+            PipelineLayoutCreateInfo {
+                flags: PipelineLayoutCreateFlags::default(),
+                set_layouts: descriptor_set_layouts,
+                push_constant_ranges: Vec::new(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut cbb = AutoCommandBufferBuilder::primary(
+            window_context
+                .command_buffer_allocator
+                .as_ref()
+                .unwrap()
+                .clone(),
+            window_context.queues.as_ref().unwrap()[0].queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        cbb.copy_buffer(CopyBufferInfo::buffers(host_buffer, device_buffer.clone()))
+            .unwrap();
+        cbb.bind_descriptor_sets(
+            PipelineBindPoint::Graphics,
+            pipeline_layout.clone(),
+            0,
+            descriptor_sets,
+        )
+        .unwrap();
+        let cb = cbb.build().unwrap();
+        cb.execute(window_context.queues.as_ref().unwrap()[0].clone())
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+
+        let subpass =
+            Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
+
+        completed_pipelines.push(
+            GraphicsPipeline::new(
+                device.clone(),
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: stages.into_iter().collect(),
+                    vertex_input_state: Some(vertex_input_state),
+                    input_assembly_state: Some(InputAssemblyState::default()),
+                    viewport_state: Some(ViewportState {
+                        viewports: [window_context.viewport.clone()].into_iter().collect(),
+                        ..Default::default()
+                    }),
+                    rasterization_state: Some(RasterizationState::default()),
+                    multisample_state: Some(MultisampleState::default()),
+                    color_blend_state: Some(ColorBlendState::with_attachment_states(
+                        subpass.num_color_attachments(),
+                        ColorBlendAttachmentState::default(),
+                    )),
+                    subpass: Some(subpass.into()),
+                    ..GraphicsPipelineCreateInfo::layout(pipeline_layout)
+                },
+            )
+            .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err)),
+        );
+    }
+
+    completed_pipelines
 }
 
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    let pipeline = window_context.pipeline.as_ref().unwrap();
-    let vertex_buffer = window_context.vertex_buffer.as_ref().unwrap();
+    let pipelines = window_context.pipelines.clone();
+    let vertex_buffers = window_context.vertex_buffers.clone();
     window_context
         .framebuffer
         .clone()
@@ -545,21 +587,24 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     },
                 )
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
-                .bind_pipeline_graphics(pipeline.clone())
+                .bind_pipeline_graphics(pipelines[0].clone())
                 .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                .bind_vertex_buffers(0, vertex_buffer.clone())
+                .bind_vertex_buffers(0, vertex_buffers[0].clone())
                 .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
 
             // Bind descriptor sets created earlier for this window/context
+            // TODO: Bind a unique descriptor set for each pipeline
+            // Currently both pipelines are identical, so only one is needed
             builder
                 .bind_descriptor_sets(
                     PipelineBindPoint::Graphics,
-                    pipeline.layout().clone(),
+                    pipelines[0].layout().clone(),
                     0,
-                    window_context
-                        .descriptor_sets
+                    window_context.meshes[0]
+                        .shaders
+                        .descriptor_set
                         .as_ref()
-                        .expect("Descriptor sets not created for window context")
+                        .expect("Descriptor sets not created for this shader")
                         .clone(),
                 )
                 .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
@@ -568,7 +613,34 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
             // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
             unsafe {
                 builder
-                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
+                    .draw(vertex_buffers[0].len() as u32, 1, 0, 0)
+                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
+            }
+
+            // TODO: Check if this is how I'm supposed to draw multiple objects
+            // Seems like I need to bind vertex buffers for each draw call?
+            builder
+                .bind_pipeline_graphics(pipelines[1].clone())
+                .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
+                .bind_vertex_buffers(0, vertex_buffers[1].clone())
+                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
+            builder
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipelines[1].layout().clone(),
+                    0,
+                    window_context.meshes[1]
+                        .shaders
+                        .descriptor_set
+                        .as_ref()
+                        .expect("Descriptor sets not created for this shader")
+                        .clone(),
+                )
+                .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
+
+            unsafe {
+                builder
+                    .draw(vertex_buffers[1].len() as u32, 1, 0, 0)
                     .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
             }
 
@@ -714,36 +786,75 @@ fn init_vulkano(window_context: &mut WindowContext) {
     ));
     window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
 
-    // Create graphics pipeline
+    // Create graphics pipeline and vertex buffers
     let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
     let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
+    let vs_default =
+        vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
+    let fs_default =
+        fs_default::load(device.clone()).expect("Failed to create default fragment shader module!");
+    window_context.default_vs = Some(vs_default.clone());
+    window_context.default_fs = Some(fs_default.clone());
 
-    window_context.vs = Some(vs.clone());
-    window_context.fs = Some(fs.clone());
     let viewport = Viewport {
         offset: [0.0, 0.0],
         extent: window.inner_size().into(),
         depth_range: 0.0..=1.0,
     };
     window_context.viewport = viewport.clone();
-    let pipeline = create_pipeline(window_context)
-        .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
-    window_context.pipeline = Some(pipeline.clone());
-    println!("Successfully created graphics pipeline");
 
     // Create vertex buffer
+    // Left triangle
     let vertex1 = MyVertex {
-        position: [0.5, 0.5],
+        position: [0.0, 0.5],
     };
     let vertex2 = MyVertex {
-        position: [0.0, -0.5],
+        position: [-0.5, -0.5],
     };
     let vertex3 = MyVertex {
-        position: [-0.5, 0.5],
+        position: [-1.0, 0.5],
     };
+    let left_triangle = Mesh {
+        verticies: vec![vertex1, vertex2, vertex3],
+        shaders: Shaders {
+            vs: vs.clone(),
+            fs: fs.clone(),
+            descriptor_set: None,
+        },
+    };
+
+    // Right triangle
+    let vertex4 = MyVertex {
+        position: [1.0, 0.5],
+    };
+    let vertex5 = MyVertex {
+        position: [0.5, -0.5],
+    };
+    let vertex6 = MyVertex {
+        position: [0.0, 0.5],
+    };
+    let right_triangle = Mesh {
+        verticies: vec![vertex4, vertex5, vertex6],
+        shaders: Shaders {
+            vs: vs.clone(),
+            fs: fs.clone(),
+            descriptor_set: None,
+        },
+    };
+
+    // These need to be copied after the pipeline is created because create_pipelines puts a descriptor set in them
+    window_context.meshes.push(left_triangle.clone());
+    window_context.meshes.push(right_triangle.clone());
+
+    window_context.pipelines = create_pipelines(window_context);
+    if window_context.pipelines.is_empty() {
+        panic!("No pipelines were created!");
+    }
+    println!("Successfully created graphics pipeline");
+
     let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-    let vertex_buffer = Buffer::from_iter(
-        vertex_memory_allocator,
+    let left_vertex_buffer = Buffer::from_iter(
+        vertex_memory_allocator.clone(),
         BufferCreateInfo {
             usage: BufferUsage::VERTEX_BUFFER,
             ..Default::default()
@@ -753,10 +864,24 @@ fn init_vulkano(window_context: &mut WindowContext) {
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        vec![vertex1, vertex2, vertex3],
+        window_context.meshes[0].verticies.clone(),
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
-    window_context.vertex_buffer = Some(vertex_buffer.clone());
+    let right_vertex_buffer = Buffer::from_iter(
+        vertex_memory_allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::VERTEX_BUFFER,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        window_context.meshes[1].verticies.clone(),
+    )
+    .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
+    window_context.vertex_buffers = vec![left_vertex_buffer.clone(), right_vertex_buffer.clone()];
 
     let command_buffers = create_command_buffers(window_context);
     println!("Successfully created command buffer");
