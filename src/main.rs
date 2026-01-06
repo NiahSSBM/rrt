@@ -1,14 +1,22 @@
+use crate::vs::vColor;
 use std::collections::BTreeMap;
-
 use std::sync::Arc;
-
+use std::sync::Mutex;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::thread;
 use std::vec;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::command_buffer::AutoCommandBufferBuilder;
+use vulkano::command_buffer::CommandBufferUsage;
+use vulkano::command_buffer::CopyBufferInfo;
+use vulkano::command_buffer::PrimaryAutoCommandBuffer;
+use vulkano::command_buffer::PrimaryCommandBufferAbstract;
+use vulkano::command_buffer::RenderPassBeginInfo;
+use vulkano::command_buffer::SubpassBeginInfo;
+use vulkano::command_buffer::SubpassContents;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
-    PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
-};
 use vulkano::descriptor_set::allocator::{
     StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo,
 };
@@ -36,14 +44,14 @@ use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorB
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition, VertexInputState};
+use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::layout::{PipelineLayoutCreateFlags, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{EntryPoint, ShaderModule, ShaderStages};
+use vulkano::shader::{ShaderModule, ShaderStages};
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -51,7 +59,6 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
-
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -59,11 +66,10 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::vs::vColor;
-
 #[derive(Default)]
 struct App {
-    window_contexts: Vec<WindowContext>,
+    window_contexts: Vec<Arc<Mutex<WindowContext>>>,
+    render_threads_tx: Vec<Sender<WindowEvent>>,
     resume_count: u32,
 }
 
@@ -101,6 +107,7 @@ struct WindowContext {
     viewport: Viewport,
     default_vs: Option<Arc<ShaderModule>>,
     default_fs: Option<Arc<ShaderModule>>,
+    //thread_tx: Option<Sender<WindowEvent>>,
 }
 
 mod vs {
@@ -138,16 +145,6 @@ struct Shaders {
     descriptor_set: Option<DescriptorSetWithOffsets>,
 }
 
-impl Shaders {
-    fn load(device: Arc<Device>) -> Result<Self, Validated<VulkanError>> {
-        Ok(Self {
-            vs: vs::load(device.clone())?,
-            fs: fs::load(device.clone())?,
-            descriptor_set: None,
-        })
-    }
-}
-
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resume_count += 1;
@@ -158,17 +155,24 @@ impl ApplicationHandler for App {
             );
             return;
         }
-        for i in 0..self.window_contexts.len() {
+        for arc in &self.window_contexts {
+            let clone = Arc::clone(&arc);
+            let mut context = clone.lock().unwrap();
             let window = Arc::new(
                 event_loop
                     .create_window(Window::default_attributes())
                     .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
             );
-            self.window_contexts[i].window = Some(window);
-            init_vulkano(&mut self.window_contexts[i]);
+            context.window = Some(window);
         }
-        // This locks up the thread
-        //self.window.first().unwrap().pre_present_notify();
+
+        for context in self.window_contexts.clone() {
+            let (tx, rx) = mpsc::channel();
+            self.render_threads_tx.push(tx);
+            thread::spawn(move || {
+                start_render_thread(context, rx);
+            });
+        }
     }
 
     fn window_event(
@@ -177,33 +181,60 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        for window_context in &mut self.window_contexts {
+        for window_context in &self.window_contexts {
+            let window_context = window_context.lock().unwrap();
             let window = window_context.window.clone().unwrap();
             if window_id == window.id() {
+                self.render_threads_tx[0]
+                    .send(event.clone())
+                    .unwrap_or_else(|e| println!("Failed to send event to render thread: {:?}", e));
                 match event {
                     WindowEvent::CloseRequested => {
-                        println!("The close button was pressed; stopping");
+                        println!("Stopping main thread");
                         event_loop.exit();
                     }
+                    _ => ()
+                }
+            }
+        }
+    }
+}
+
+fn start_render_thread(window_context: Arc<Mutex<WindowContext>>, rx: Receiver<WindowEvent>) {
+    {
+        let mut window_context = window_context.lock().unwrap();
+        init_vulkano(&mut *window_context);
+    }
+
+    loop {
+        let result = rx.try_recv();
+        {
+            let mut window_context = window_context.lock().unwrap();
+            match result {
+                Ok(e) => match e {
                     WindowEvent::RedrawRequested => {
                         if window_context.resized || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
-                            recreate_swapchain(window_context);
-
+                            recreate_swapchain(&mut window_context);
                             if window_context.resized {
                                 window_context.resized = false;
-                                resize_window(window_context);
+                                resize_window(&mut window_context);
                             }
                         }
 
-                        redraw(window_context);
-                        window.request_redraw();
+                        redraw(&mut window_context);
+                        window_context.window.as_ref().unwrap().request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
                         window_context.resized = true;
                     }
-                    _ => (), //println!("Event received: {:?}", event),
-                }
+                    WindowEvent::CloseRequested => {
+                        println!("Stopping render thread");
+                        break;
+                    }
+                    _ => (),
+                },
+                Err(_) => (),
             }
         }
     }
@@ -394,9 +425,7 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
-fn create_pipelines(
-    window_context: &mut WindowContext,
-) -> Vec<Arc<GraphicsPipeline>> {
+fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
@@ -433,7 +462,7 @@ fn create_pipelines(
             let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
             descriptor_set_layouts.push(layout);
         }
-        let mut data = vs::vColor {
+        let data = vs::vColor {
             colors: [
                 [1.0, 0.0, 0.0].into(),
                 [0.0, 1.0, 0.0].into(),
@@ -719,7 +748,7 @@ fn create_frame_buffer(
 }
 
 fn init_vulkano(window_context: &mut WindowContext) {
-    let window_context = window_context;
+    //let mut window_context = window_context.lock().unwrap();
     let window = window_context.window.clone().unwrap();
     let vulkan_instance = window_context
         .vulkan_instance
@@ -883,7 +912,7 @@ fn init_vulkano(window_context: &mut WindowContext) {
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
     window_context.vertex_buffers = vec![left_vertex_buffer.clone(), right_vertex_buffer.clone()];
 
-    let command_buffers = create_command_buffers(window_context);
+    let command_buffers = create_command_buffers(&window_context);
     println!("Successfully created command buffer");
     window_context.command_buffers = Some(command_buffers);
 }
@@ -909,15 +938,15 @@ fn main() {
 
     let mut app = App {
         window_contexts: vec![
-            WindowContext {
+            Arc::new(Mutex::new(WindowContext {
                 vulkan_instance: Some(vulkan_instance.clone()),
                 ..Default::default()
-            },
-            //WindowContext {
+            })),
+            //Arc::new(Mutex::new(WindowContext {
             //    // Creating a second window context just as a test for now
             //    vulkan_instance: Some(vulkan_instance.clone()),
             //    ..Default::default()
-            //},
+            //})),
         ],
         ..Default::default()
     };
