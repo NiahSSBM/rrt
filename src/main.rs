@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::time::Duration;
 use std::vec;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::AutoCommandBufferBuilder;
@@ -59,6 +60,8 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
+use winit::dpi::PhysicalSize;
+use winit::dpi::Size;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -68,7 +71,7 @@ use winit::{
 
 #[derive(Default)]
 struct App {
-    window_contexts: Vec<Arc<Mutex<WindowContext>>>,
+    window_contexts: Vec<WindowContext>,
     render_threads_tx: Vec<Sender<WindowEvent>>,
     resume_count: u32,
 }
@@ -89,6 +92,13 @@ struct Mesh {
 #[derive(Default)]
 struct WindowContext {
     window: Option<Arc<Window>>,
+    //viewport: Viewport,
+    vulkan_resource: Arc<Mutex<VulkanResource>>,
+    //thread_tx: Option<Sender<WindowEvent>>,
+}
+
+#[derive(Default)]
+struct VulkanResource {
     vulkan_instance: Option<Arc<Instance>>,
     device: Option<Arc<Device>>,
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
@@ -103,11 +113,12 @@ struct WindowContext {
     meshes: Vec<Mesh>,
     previous_fence_i: u32,
     resized: bool,
+    image_extent: PhysicalSize<u32>,
     recreate_swapchain: bool,
+    surface: Option<Arc<Surface>>,
     viewport: Viewport,
     default_vs: Option<Arc<ShaderModule>>,
     default_fs: Option<Arc<ShaderModule>>,
-    //thread_tx: Option<Sender<WindowEvent>>,
 }
 
 mod vs {
@@ -155,22 +166,23 @@ impl ApplicationHandler for App {
             );
             return;
         }
-        for arc in &self.window_contexts {
-            let clone = Arc::clone(&arc);
-            let mut context = clone.lock().unwrap();
+        for context in &mut self.window_contexts {
             let window = Arc::new(
                 event_loop
                     .create_window(Window::default_attributes())
                     .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
             );
-            context.window = Some(window);
+            context.window = Some(window.clone());
+            let mut vr = context.vulkan_resource.lock().unwrap();
+            vr.surface = Some(create_surface(window, vr.vulkan_instance.clone().unwrap()));
         }
 
-        for context in self.window_contexts.clone() {
+        for context in &self.window_contexts {
             let (tx, rx) = mpsc::channel();
             self.render_threads_tx.push(tx);
-            thread::spawn(move || {
-                start_render_thread(context, rx);
+            let vr = context.vulkan_resource.clone();
+            thread::spawn(|| {
+                start_render_thread(vr, rx);
             });
         }
     }
@@ -181,99 +193,110 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        for window_context in &self.window_contexts {
-            let window_context = window_context.lock().unwrap();
-            let window = window_context.window.clone().unwrap();
+        for window_context in &mut self.window_contexts {
+            let window = window_context.window.as_ref().unwrap();
             if window_id == window.id() {
                 self.render_threads_tx[0]
                     .send(event.clone())
-                    .unwrap_or_else(|e| println!("Failed to send event to render thread: {:?}", e));
+                    .unwrap_or_else(|e| panic!("Failed to send event to render thread: {:?}", e));
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("Stopping main thread");
                         event_loop.exit();
                     }
-                    _ => ()
+                    WindowEvent::RedrawRequested => {
+                        // This needs to move to the render thread. It's flooding the render thread with requests it can't handle in time.
+                        window.request_redraw();
+                    }
+                    _ => (),
                 }
             }
         }
     }
 }
 
-fn start_render_thread(window_context: Arc<Mutex<WindowContext>>, rx: Receiver<WindowEvent>) {
+fn start_render_thread(vulkan_resource: Arc<Mutex<VulkanResource>>, rx: Receiver<WindowEvent>) {
     {
-        let mut window_context = window_context.lock().unwrap();
-        init_vulkano(&mut *window_context);
+        let mut vr = vulkan_resource.lock().unwrap();
+        init_vulkano(&mut vr);
     }
 
-    loop {
-        let result = rx.try_recv();
-        {
-            let mut window_context = window_context.lock().unwrap();
-            match result {
-                Ok(e) => match e {
-                    WindowEvent::RedrawRequested => {
-                        if window_context.resized || window_context.recreate_swapchain {
-                            window_context.recreate_swapchain = false;
-                            recreate_swapchain(&mut window_context);
-                            if window_context.resized {
-                                window_context.resized = false;
-                                resize_window(&mut window_context);
-                            }
-                        }
+    let mut receive_count = 0;
 
-                        redraw(&mut window_context);
-                        window_context.window.as_ref().unwrap().request_redraw();
+    loop {
+        let result = rx.recv_timeout(Duration::MAX);
+        {
+            match result {
+                Ok(e) => {
+                    receive_count += 1;
+                    println!("{receive_count}");
+                    let mut vr: std::sync::MutexGuard<'_, VulkanResource> =
+                        vulkan_resource.lock().unwrap();
+                    match e {
+                        WindowEvent::RedrawRequested => {
+                            if vr.resized || vr.recreate_swapchain {
+                                vr.recreate_swapchain = false;
+                                recreate_swapchain(&mut vr);
+                                if vr.resized {
+                                    vr.resized = false;
+                                    println!("test");
+                                    resize_window(&mut vr);
+                                }
+                            }
+                            redraw(&mut vr);
+                        },
+                        WindowEvent::Resized(size) => {
+                            vr.resized = true;
+                            println!("Window resized");
+                            vr.image_extent = size;
+                        },
+                        WindowEvent::CloseRequested => {
+                            println!("Stopping render thread");
+                            break;
+                        },
+                        _ => (),
                     }
-                    WindowEvent::Resized(_size) => {
-                        window_context.resized = true;
-                    }
-                    WindowEvent::CloseRequested => {
-                        println!("Stopping render thread");
-                        break;
-                    }
-                    _ => (),
-                },
+                }
                 Err(_) => (),
             }
         }
     }
 }
 
-fn recreate_swapchain(window_context: &mut WindowContext) {
-    let (new_swapchain, new_images) = window_context
+fn recreate_swapchain(vr: &mut VulkanResource) {
+    let (new_swapchain, new_images) = vr
         .swapchain
         .as_ref()
         .unwrap()
         .recreate(SwapchainCreateInfo {
-            image_extent: window_context.window.as_ref().unwrap().inner_size().into(),
-            ..window_context.swapchain.as_ref().unwrap().create_info()
+            image_extent: [vr.viewport.extent[0] as u32, vr.viewport.extent[1] as u32],
+            ..vr.swapchain.as_ref().unwrap().create_info()
         })
         .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
 
-    window_context.swapchain = Some(new_swapchain);
-    let new_framebuffers =
-        create_frame_buffer(window_context.render_pass.clone().unwrap(), new_images);
-    window_context.framebuffer = Some(new_framebuffers);
+    vr.swapchain = Some(new_swapchain);
+    let new_framebuffers = create_frame_buffer(vr.render_pass.clone().unwrap(), new_images);
+    vr.framebuffer = Some(new_framebuffers);
 }
 
-fn resize_window(window_context: &mut WindowContext) {
-    window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
-    let new_pipelines = create_pipelines(window_context);
-    if window_context.pipelines.is_empty() {
+fn resize_window(vr: &mut VulkanResource) {
+    vr.viewport.extent = vr.image_extent.into();
+    println!("Image Extent: {:?}", vr.viewport.extent);
+    let new_pipelines = create_pipelines(vr);
+    if vr.pipelines.is_empty() {
         panic!("No pipelines were created!");
     }
-    window_context.pipelines = new_pipelines.clone();
-    let new_command_buffers = create_command_buffers(window_context);
-    window_context.command_buffers = Some(new_command_buffers);
+    vr.pipelines = new_pipelines.clone();
+    let new_command_buffers = create_command_buffers(vr);
+    vr.command_buffers = Some(new_command_buffers);
 }
 
-fn redraw(window_context: &mut WindowContext) {
-    let queues = window_context.queues.as_ref().unwrap();
+fn redraw(vr: &mut VulkanResource) {
+    let queues = vr.queues.as_ref().unwrap();
     let queue = &queues[0];
-    let command_buffers = window_context.command_buffers.as_ref().unwrap();
-    let swapchain = window_context.swapchain.clone().unwrap();
-    let images = window_context.images.clone().unwrap();
+    let command_buffers = vr.command_buffers.as_ref().unwrap();
+    let swapchain = vr.swapchain.clone().unwrap();
+    let images = vr.images.clone().unwrap();
 
     let (image_i, suboptimal, acquire_future) =
         match swapchain::acquire_next_image(swapchain.clone(), None).map_err(Validated::unwrap) {
@@ -282,7 +305,7 @@ fn redraw(window_context: &mut WindowContext) {
         };
 
     if suboptimal {
-        window_context.recreate_swapchain = true;
+        vr.recreate_swapchain = true;
     }
 
     let frames_in_flight = images.len();
@@ -292,9 +315,9 @@ fn redraw(window_context: &mut WindowContext) {
         image_fence.wait(None).unwrap();
     }
 
-    let previous_future = match fences[window_context.previous_fence_i as usize].clone() {
+    let previous_future = match fences[vr.previous_fence_i as usize].clone() {
         None => {
-            let mut now = sync::now(window_context.device.clone().unwrap());
+            let mut now = sync::now(vr.device.clone().unwrap());
             now.cleanup_finished();
             now.boxed()
         }
@@ -314,7 +337,7 @@ fn redraw(window_context: &mut WindowContext) {
     fences[image_i as usize] = match future.map_err(Validated::unwrap) {
         Ok(value) => Some(Arc::new(value)),
         Err(VulkanError::OutOfDate) => {
-            window_context.recreate_swapchain = true;
+            vr.recreate_swapchain = true;
             None
         }
         Err(e) => {
@@ -323,7 +346,7 @@ fn redraw(window_context: &mut WindowContext) {
         }
     };
 
-    window_context.previous_fence_i = image_i;
+    vr.previous_fence_i = image_i;
 }
 
 fn get_device_total_memory(device: &Arc<PhysicalDevice>) -> u64 {
@@ -425,15 +448,15 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
-fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
-    let device = window_context.device.as_ref().unwrap();
+fn create_pipelines(vr: &mut VulkanResource) -> Vec<Arc<GraphicsPipeline>> {
+    let device = vr.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
-    if window_context.meshes.is_empty() {
+    if vr.meshes.is_empty() {
         println!("Warning: No meshes to load!");
     }
 
-    for mesh in &mut window_context.meshes {
+    for mesh in &mut vr.meshes {
         let vs = mesh.shaders.vs.entry_point("main").unwrap();
         let fs = mesh.shaders.fs.entry_point("main").unwrap();
 
@@ -527,12 +550,8 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         .unwrap();
 
         let mut cbb = AutoCommandBufferBuilder::primary(
-            window_context
-                .command_buffer_allocator
-                .as_ref()
-                .unwrap()
-                .clone(),
-            window_context.queues.as_ref().unwrap()[0].queue_family_index(),
+            vr.command_buffer_allocator.as_ref().unwrap().clone(),
+            vr.queues.as_ref().unwrap()[0].queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
@@ -546,15 +565,14 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         )
         .unwrap();
         let cb = cbb.build().unwrap();
-        cb.execute(window_context.queues.as_ref().unwrap()[0].clone())
+        cb.execute(vr.queues.as_ref().unwrap()[0].clone())
             .unwrap()
             .then_signal_fence_and_flush()
             .unwrap()
             .wait(None)
             .unwrap();
 
-        let subpass =
-            Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
+        let subpass = Subpass::from(vr.render_pass.as_ref().unwrap().clone(), 0).unwrap();
 
         completed_pipelines.push(
             GraphicsPipeline::new(
@@ -565,7 +583,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                     vertex_input_state: Some(vertex_input_state),
                     input_assembly_state: Some(InputAssemblyState::default()),
                     viewport_state: Some(ViewportState {
-                        viewports: [window_context.viewport.clone()].into_iter().collect(),
+                        viewports: [vr.viewport.clone()].into_iter().collect(),
                         ..Default::default()
                     }),
                     rasterization_state: Some(RasterizationState::default()),
@@ -585,22 +603,17 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     completed_pipelines
 }
 
-fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    let pipelines = window_context.pipelines.clone();
-    let vertex_buffers = window_context.vertex_buffers.clone();
-    window_context
-        .framebuffer
+fn create_command_buffers(vr: &VulkanResource) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+    let pipelines = vr.pipelines.clone();
+    let vertex_buffers = vr.vertex_buffers.clone();
+    vr.framebuffer
         .clone()
         .unwrap()
         .iter()
         .map(|framebuffer| {
             let mut builder = AutoCommandBufferBuilder::primary(
-                window_context
-                    .command_buffer_allocator
-                    .as_ref()
-                    .unwrap()
-                    .clone(),
-                window_context.queues.as_ref().unwrap()[0].queue_family_index(),
+                vr.command_buffer_allocator.as_ref().unwrap().clone(),
+                vr.queues.as_ref().unwrap()[0].queue_family_index(),
                 CommandBufferUsage::MultipleSubmit,
             )
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
@@ -629,7 +642,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     PipelineBindPoint::Graphics,
                     pipelines[0].layout().clone(),
                     0,
-                    window_context.meshes[0]
+                    vr.meshes[0]
                         .shaders
                         .descriptor_set
                         .as_ref()
@@ -658,7 +671,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     PipelineBindPoint::Graphics,
                     pipelines[1].layout().clone(),
                     0,
-                    window_context.meshes[1]
+                    vr.meshes[1]
                         .shaders
                         .descriptor_set
                         .as_ref()
@@ -747,14 +760,22 @@ fn create_frame_buffer(
         .collect()
 }
 
-fn init_vulkano(window_context: &mut WindowContext) {
+fn init_vulkano(vr: &mut VulkanResource) {
     //let mut window_context = window_context.lock().unwrap();
-    let window = window_context.window.clone().unwrap();
-    let vulkan_instance = window_context
+    //let window = window_context.window.clone().unwrap();
+    let vulkan_instance = vr
         .vulkan_instance
         .as_ref()
         .expect("Attempted to initialize vulkan with no vulkan instance!")
         .clone();
+
+    // Create viewport
+    let viewport = Viewport {
+        offset: [0.0, 0.0],
+        extent: [800.0, 600.0],
+        depth_range: 0.0..=1.0,
+    };
+    vr.viewport = viewport;
 
     // Queue available physical devices and select one
     let available_devices = vulkan_instance.enumerate_physical_devices().unwrap();
@@ -775,35 +796,31 @@ fn init_vulkano(window_context: &mut WindowContext) {
     let (device, queues) = create_device(selected_device.clone())
         .unwrap_or_else(|err| panic!("Could not create graphics device: {:?}", err));
     let queues: Vec<Arc<Queue>> = queues.collect();
-    window_context.queues = Some(queues.clone());
-    window_context.device = Some(device.clone());
+    vr.queues = Some(queues.clone());
+    vr.device = Some(device.clone());
     println!("Successfully created graphics device");
 
-    // Create the surface fom the window provided by winit
-    let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
-        .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
-    println!("Successfully created surface");
-
     // Create the swapchain and images
+    let surface = vr.surface.clone().unwrap();
     let surface_capabilities = selected_device
         .surface_capabilities(&surface, Default::default())
         .unwrap_or_else(|err| panic!("Failed to get surface capabilities: {:?}", err));
     let (swapchain, swapchain_images) =
         create_swapchain(device.clone(), surface, surface_capabilities)
             .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
-    window_context.swapchain = Some(swapchain.clone());
-    window_context.images = Some(swapchain_images.clone());
+    vr.swapchain = Some(swapchain.clone());
+    vr.images = Some(swapchain_images.clone());
     println!("Successfully created swapchain");
 
     // Create render pass
     let render_pass = create_render_pass(device.clone(), swapchain.clone())
         .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
     println!("Successfully created render pass");
-    window_context.render_pass = Some(render_pass.clone());
+    vr.render_pass = Some(render_pass.clone());
 
     // Create frame buffer
     let framebuffer = create_frame_buffer(render_pass.clone(), swapchain_images.clone());
-    window_context.framebuffer = Some(framebuffer.clone());
+    vr.framebuffer = Some(framebuffer.clone());
     println!("Successfully created framebuffer");
 
     // Create command buffer
@@ -813,7 +830,7 @@ fn init_vulkano(window_context: &mut WindowContext) {
         device.clone(),
         Default::default(),
     ));
-    window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
+    vr.command_buffer_allocator = Some(command_buffer_allocator.clone());
 
     // Create graphics pipeline and vertex buffers
     let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
@@ -822,15 +839,8 @@ fn init_vulkano(window_context: &mut WindowContext) {
         vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
     let fs_default =
         fs_default::load(device.clone()).expect("Failed to create default fragment shader module!");
-    window_context.default_vs = Some(vs_default.clone());
-    window_context.default_fs = Some(fs_default.clone());
-
-    let viewport = Viewport {
-        offset: [0.0, 0.0],
-        extent: window.inner_size().into(),
-        depth_range: 0.0..=1.0,
-    };
-    window_context.viewport = viewport.clone();
+    vr.default_vs = Some(vs_default.clone());
+    vr.default_fs = Some(fs_default.clone());
 
     // Create vertex buffer
     // Left triangle
@@ -872,11 +882,11 @@ fn init_vulkano(window_context: &mut WindowContext) {
     };
 
     // These need to be copied after the pipeline is created because create_pipelines puts a descriptor set in them
-    window_context.meshes.push(left_triangle.clone());
-    window_context.meshes.push(right_triangle.clone());
+    vr.meshes.push(left_triangle.clone());
+    vr.meshes.push(right_triangle.clone());
 
-    window_context.pipelines = create_pipelines(window_context);
-    if window_context.pipelines.is_empty() {
+    vr.pipelines = create_pipelines(vr);
+    if vr.pipelines.is_empty() {
         panic!("No pipelines were created!");
     }
     println!("Successfully created graphics pipeline");
@@ -893,7 +903,7 @@ fn init_vulkano(window_context: &mut WindowContext) {
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        window_context.meshes[0].verticies.clone(),
+        vr.meshes[0].verticies.clone(),
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
     let right_vertex_buffer = Buffer::from_iter(
@@ -907,14 +917,19 @@ fn init_vulkano(window_context: &mut WindowContext) {
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        window_context.meshes[1].verticies.clone(),
+        vr.meshes[1].verticies.clone(),
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
-    window_context.vertex_buffers = vec![left_vertex_buffer.clone(), right_vertex_buffer.clone()];
+    vr.vertex_buffers = vec![left_vertex_buffer.clone(), right_vertex_buffer.clone()];
 
-    let command_buffers = create_command_buffers(&window_context);
+    let command_buffers = create_command_buffers(&vr);
     println!("Successfully created command buffer");
-    window_context.command_buffers = Some(command_buffers);
+    vr.command_buffers = Some(command_buffers);
+}
+
+fn create_surface(window: Arc<Window>, vulkan_instance: Arc<Instance>) -> Arc<Surface> {
+    Surface::from_window(vulkan_instance.clone(), window.clone())
+        .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err))
 }
 
 fn main() {
@@ -937,17 +952,13 @@ fn main() {
     .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
 
     let mut app = App {
-        window_contexts: vec![
-            Arc::new(Mutex::new(WindowContext {
+        window_contexts: vec![WindowContext {
+            vulkan_resource: Arc::new(Mutex::new(VulkanResource {
                 vulkan_instance: Some(vulkan_instance.clone()),
                 ..Default::default()
             })),
-            //Arc::new(Mutex::new(WindowContext {
-            //    // Creating a second window context just as a test for now
-            //    vulkan_instance: Some(vulkan_instance.clone()),
-            //    ..Default::default()
-            //})),
-        ],
+            ..Default::default()
+        }],
         ..Default::default()
     };
     event_loop.run_app(&mut app).unwrap_or_else(|err| {
