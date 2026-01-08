@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use std::sync::Arc;
 
+use std::time::{Duration, Instant};
 use std::vec;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -99,6 +100,7 @@ struct WindowContext {
     resized: bool,
     recreate_swapchain: bool,
     viewport: Viewport,
+    last_resized: Option<Instant>,
     default_vs: Option<Arc<ShaderModule>>,
     default_fs: Option<Arc<ShaderModule>>,
 }
@@ -192,6 +194,7 @@ impl ApplicationHandler for App {
 
                             if window_context.resized {
                                 window_context.resized = false;
+                                window_context.last_resized = Some(Instant::now());
                                 resize_window(window_context);
                             }
                         }
@@ -200,7 +203,10 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
-                        window_context.resized = true;
+                        let last_resized = window_context.last_resized.unwrap_or(Instant::now() - Duration::from_secs(5));
+                        if last_resized.elapsed() > Duration::from_secs_f32(1.0) {
+                            window_context.resized = true;
+                        }
                     }
                     _ => (), //println!("Event received: {:?}", event),
                 }
