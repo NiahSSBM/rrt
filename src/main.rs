@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 use std::vec;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
@@ -72,7 +73,6 @@ use winit::{
 #[derive(Default)]
 struct App {
     window_contexts: Vec<WindowContext>,
-    render_threads_tx: Vec<Sender<WindowEvent>>,
     resume_count: u32,
 }
 
@@ -94,6 +94,8 @@ struct WindowContext {
     window: Option<Arc<Window>>,
     //viewport: Viewport,
     vulkan_resource: Arc<Mutex<VulkanResource>>,
+    main_render_tx: Option<Sender<WindowEvent>>,
+    render_main_rx: Option<Receiver<bool>>,
     //thread_tx: Option<Sender<WindowEvent>>,
 }
 
@@ -177,12 +179,14 @@ impl ApplicationHandler for App {
             vr.surface = Some(create_surface(window, vr.vulkan_instance.clone().unwrap()));
         }
 
-        for context in &self.window_contexts {
-            let (tx, rx) = mpsc::channel();
-            self.render_threads_tx.push(tx);
+        for context in &mut self.window_contexts {
+            let (main_render_tx, main_render_rx) = mpsc::channel();
+            let (render_main_tx, render_main_rx) = mpsc::channel();
+            context.main_render_tx = Some(main_render_tx);
+            context.render_main_rx = Some(render_main_rx);
             let vr = context.vulkan_resource.clone();
             thread::spawn(|| {
-                start_render_thread(vr, rx);
+                start_render_thread(vr, main_render_rx, render_main_tx);
             });
         }
     }
@@ -196,7 +200,15 @@ impl ApplicationHandler for App {
         for window_context in &mut self.window_contexts {
             let window = window_context.window.as_ref().unwrap();
             if window_id == window.id() {
-                self.render_threads_tx[0]
+                let render_signal = window_context.render_main_rx.as_ref().unwrap().try_recv();
+                match render_signal {
+                    Ok(_) => window.request_redraw(),
+                    Err(_) => (),
+                }
+                window_context
+                    .main_render_tx
+                    .as_ref()
+                    .unwrap()
                     .send(event.clone())
                     .unwrap_or_else(|e| panic!("Failed to send event to render thread: {:?}", e));
                 match event {
@@ -206,7 +218,7 @@ impl ApplicationHandler for App {
                     }
                     WindowEvent::RedrawRequested => {
                         // This needs to move to the render thread. It's flooding the render thread with requests it can't handle in time.
-                        window.request_redraw();
+                        //window.request_redraw();
                     }
                     _ => (),
                 }
@@ -215,7 +227,11 @@ impl ApplicationHandler for App {
     }
 }
 
-fn start_render_thread(vulkan_resource: Arc<Mutex<VulkanResource>>, rx: Receiver<WindowEvent>) {
+fn start_render_thread(
+    vulkan_resource: Arc<Mutex<VulkanResource>>,
+    rx: Receiver<WindowEvent>,
+    tx: Sender<bool>,
+) {
     {
         let mut vr = vulkan_resource.lock().unwrap();
         init_vulkano(&mut vr);
@@ -239,21 +255,22 @@ fn start_render_thread(vulkan_resource: Arc<Mutex<VulkanResource>>, rx: Receiver
                                 recreate_swapchain(&mut vr);
                                 if vr.resized {
                                     vr.resized = false;
-                                    println!("test");
                                     resize_window(&mut vr);
                                 }
                             }
                             redraw(&mut vr);
-                        },
+                            tx.send(true).unwrap_or_else(|e| {
+                                panic!("Failed to send event to render thread: {:?}", e)
+                            });
+                        }
                         WindowEvent::Resized(size) => {
                             vr.resized = true;
-                            println!("Window resized");
                             vr.image_extent = size;
-                        },
+                        }
                         WindowEvent::CloseRequested => {
                             println!("Stopping render thread");
                             break;
-                        },
+                        }
                         _ => (),
                     }
                 }
