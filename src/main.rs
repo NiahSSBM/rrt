@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use std::time::{Duration, Instant};
 use std::vec;
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::buffer::{
+    Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer,
+};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
@@ -90,7 +92,7 @@ struct WindowContext {
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
-    vertex_buffers: Vec<Subbuffer<[MyVertex]>>,
+    vertex_buffer: Option<Subbuffer<[MyVertex]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
@@ -203,7 +205,9 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
-                        let last_resized = window_context.last_resized.unwrap_or(Instant::now() - Duration::from_secs(5));
+                        let last_resized = window_context
+                            .last_resized
+                            .unwrap_or(Instant::now() - Duration::from_secs(5));
                         if last_resized.elapsed() > Duration::from_secs_f32(1.0) {
                             window_context.resized = true;
                         }
@@ -400,9 +404,7 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
-fn create_pipelines(
-    window_context: &mut WindowContext,
-) -> Vec<Arc<GraphicsPipeline>> {
+fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
@@ -439,7 +441,7 @@ fn create_pipelines(
             let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
             descriptor_set_layouts.push(layout);
         }
-        let mut data = vs::vColor {
+        let data = vs::vColor {
             colors: [
                 [1.0, 0.0, 0.0].into(),
                 [0.0, 1.0, 0.0].into(),
@@ -564,7 +566,7 @@ fn create_pipelines(
 
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     let pipelines = window_context.pipelines.clone();
-    let vertex_buffers = window_context.vertex_buffers.clone();
+    let vertex_buffer = window_context.vertex_buffer.as_ref().unwrap().clone();
     window_context
         .framebuffer
         .clone()
@@ -581,6 +583,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 CommandBufferUsage::MultipleSubmit,
             )
             .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
+        
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
@@ -595,13 +598,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
                 .bind_pipeline_graphics(pipelines[0].clone())
                 .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                .bind_vertex_buffers(0, vertex_buffers[0].clone())
-                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
-
-            // Bind descriptor sets created earlier for this window/context
-            // TODO: Bind a unique descriptor set for each pipeline
-            // Currently both pipelines are identical, so only one is needed
-            builder
+                .bind_vertex_buffers(0, vertex_buffer.clone())
+                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
                 .bind_descriptor_sets(
                     PipelineBindPoint::Graphics,
                     pipelines[0].layout().clone(),
@@ -619,34 +617,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
             // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
             unsafe {
                 builder
-                    .draw(vertex_buffers[0].len() as u32, 1, 0, 0)
-                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
-            }
-
-            // TODO: Check if this is how I'm supposed to draw multiple objects
-            // Seems like I need to bind vertex buffers for each draw call?
-            builder
-                .bind_pipeline_graphics(pipelines[1].clone())
-                .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                .bind_vertex_buffers(0, vertex_buffers[1].clone())
-                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
-            builder
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Graphics,
-                    pipelines[1].layout().clone(),
-                    0,
-                    window_context.meshes[1]
-                        .shaders
-                        .descriptor_set
-                        .as_ref()
-                        .expect("Descriptor sets not created for this shader")
-                        .clone(),
-                )
-                .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
-
-            unsafe {
-                builder
-                    .draw(vertex_buffers[1].len() as u32, 1, 0, 0)
+                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
                     .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
             }
 
@@ -859,7 +830,8 @@ fn init_vulkano(window_context: &mut WindowContext) {
     println!("Successfully created graphics pipeline");
 
     let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-    let left_vertex_buffer = Buffer::from_iter(
+    let verticies = combine_verticies(vec![left_triangle.verticies, right_triangle.verticies]);
+    let vertex_buffer = Buffer::from_iter(
         vertex_memory_allocator.clone(),
         BufferCreateInfo {
             usage: BufferUsage::VERTEX_BUFFER,
@@ -870,28 +842,24 @@ fn init_vulkano(window_context: &mut WindowContext) {
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        window_context.meshes[0].verticies.clone(),
+        verticies,
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
-    let right_vertex_buffer = Buffer::from_iter(
-        vertex_memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::VERTEX_BUFFER,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        window_context.meshes[1].verticies.clone(),
-    )
-    .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
-    window_context.vertex_buffers = vec![left_vertex_buffer.clone(), right_vertex_buffer.clone()];
+    window_context.vertex_buffer = Some(vertex_buffer);
 
     let command_buffers = create_command_buffers(window_context);
     println!("Successfully created command buffer");
     window_context.command_buffers = Some(command_buffers);
+}
+
+fn combine_verticies(verticies: Vec<Vec<MyVertex>>) -> Vec<MyVertex> {
+    let mut out: Vec<MyVertex> = Vec::new();
+    for mut vec in verticies {
+        out.try_reserve(vec.len())
+            .unwrap_or_else(|e| panic!("Could not combine verticies: {:?}", e));
+        out.append(&mut vec);
+    }
+    out
 }
 
 fn main() {
