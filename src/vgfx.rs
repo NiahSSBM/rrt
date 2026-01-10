@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, TryReserveError};
 
 use std::sync::Arc;
 
 use std::time::Instant;
 use std::vec;
-use vs::vColor;
+use vs_default::vColor;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
@@ -31,7 +31,8 @@ use vulkano::image::{Image, ImageAspects, ImageSubresourceRange, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{
-    AllocationCreateInfo, GenericMemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
+    AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
+    StandardMemoryAllocator,
 };
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
@@ -56,32 +57,21 @@ use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
 use winit::window::Window;
 
-#[derive(BufferContents, Vertex, Clone)]
-#[repr(C)]
-struct MyVertex {
-    #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
-}
+use crate::mesh::{Mesh, MyVertex, combine_verticies};
 
-#[derive(Clone)]
-struct Mesh {
-    verticies: Vec<MyVertex>,
-    shaders: Shaders,
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "shaders/vert.glsl",
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "shaders/frag.glsl",
-    }
-}
+//mod vs {
+//    vulkano_shaders::shader! {
+//        ty: "vertex",
+//        path: "shaders/vert.glsl",
+//    }
+//}
+//
+//mod fs {
+//    vulkano_shaders::shader! {
+//        ty: "fragment",
+//        path: "shaders/frag.glsl",
+//    }
+//}
 
 mod vs_default {
     vulkano_shaders::shader! {
@@ -99,18 +89,19 @@ mod fs_default {
 
 #[derive(Clone)]
 pub struct Shaders {
-    vs: Arc<ShaderModule>,
-    fs: Arc<ShaderModule>,
-    descriptor_set: Option<DescriptorSetWithOffsets>,
+    pub vs: Arc<ShaderModule>,
+    pub fs: Arc<ShaderModule>,
+    pub descriptor_set: Option<DescriptorSetWithOffsets>,
 }
 
 #[derive(Default)]
 pub struct WindowContext {
-    pub(crate) window: Option<Arc<Window>>,
-    pub(crate) vulkan_instance: Option<Arc<Instance>>,
+    pub window: Option<Arc<Window>>,
+    pub vulkan_instance: Option<Arc<Instance>>,
     device: Option<Arc<Device>>,
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
+    vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
@@ -120,12 +111,12 @@ pub struct WindowContext {
     render_pass: Option<Arc<RenderPass>>,
     meshes: Vec<Mesh>,
     previous_fence_i: u32,
-    pub(crate) resized: bool,
-    pub(crate) recreate_swapchain: bool,
+    pub resized: bool,
+    pub recreate_swapchain: bool,
     viewport: Viewport,
-    pub(crate) last_resized: Option<Instant>,
-    default_vs: Option<Arc<ShaderModule>>,
-    default_fs: Option<Arc<ShaderModule>>,
+    pub last_resized: Option<Instant>,
+    pub default_vs: Option<Arc<ShaderModule>>,
+    pub default_fs: Option<Arc<ShaderModule>>,
 }
 
 impl WindowContext {
@@ -150,9 +141,18 @@ impl WindowContext {
             ..Default::default()
         }
     }
+
+    pub fn add_mesh(&mut self, mesh: Mesh) -> Result<&mut Self, TryReserveError> {
+        self.meshes.try_reserve(1)?;
+        self.meshes.push(mesh);
+
+        update_vertex_buffer(self);
+
+        Ok(self)
+    }
 }
 
-pub(crate) fn recreate_swapchain(window_context: &mut WindowContext) {
+pub fn recreate_swapchain(window_context: &mut WindowContext) {
     let (new_swapchain, new_images) = window_context
         .swapchain
         .as_ref()
@@ -169,18 +169,20 @@ pub(crate) fn recreate_swapchain(window_context: &mut WindowContext) {
     window_context.framebuffer = Some(new_framebuffers);
 }
 
-pub(crate) fn resize_window(window_context: &mut WindowContext) {
+pub fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
     let new_pipelines = create_pipelines(window_context);
     if window_context.pipelines.is_empty() {
-        panic!("No pipelines were created!");
+        println!(
+            "Warning: No pipelines were created when resizing window! Are there any meshes to draw?"
+        );
     }
     window_context.pipelines = new_pipelines.clone();
     let new_command_buffers = create_command_buffers(window_context);
     window_context.command_buffers = Some(new_command_buffers);
 }
 
-pub(crate) fn redraw(window_context: &mut WindowContext) {
+pub fn redraw(window_context: &mut WindowContext) {
     let queues = window_context.queues.as_ref().unwrap();
     let queue = &queues[0];
     let command_buffers = window_context.command_buffers.as_ref().unwrap();
@@ -374,7 +376,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
             descriptor_set_layouts.push(layout);
         }
-        let data = vs::vColor {
+        let data = vs_default::vColor {
             colors: [
                 [1.0, 0.0, 0.0].into(),
                 [0.0, 1.0, 0.0].into(),
@@ -499,7 +501,11 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     let pipelines = window_context.pipelines.clone();
-    let vertex_buffer = window_context.vertex_buffer.as_ref().unwrap().clone();
+    let vertex_buffer = window_context
+        .vertex_buffer
+        .as_ref()
+        .expect("ERROR: There's no vertex buffer!")
+        .clone();
     window_context
         .framebuffer
         .clone()
@@ -528,30 +534,33 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         ..Default::default()
                     },
                 )
-                .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err))
-                .bind_pipeline_graphics(pipelines[0].clone())
-                .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                .bind_vertex_buffers(0, vertex_buffer.clone())
-                .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Graphics,
-                    pipelines[0].layout().clone(),
-                    0,
-                    window_context.meshes[0]
-                        .shaders
-                        .descriptor_set
-                        .as_ref()
-                        .expect("Descriptor sets not created for this shader")
-                        .clone(),
-                )
-                .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
-
-            // Draw functions are marked as unsafe in vulkano as shader safety needs to be followed
-            // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
-            unsafe {
+                .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
+            if !pipelines.is_empty() {
                 builder
-                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                    .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
+                    .bind_pipeline_graphics(pipelines[0].clone())
+                    .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
+                    .bind_vertex_buffers(0, vertex_buffer.clone())
+                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Graphics,
+                        pipelines[0].layout().clone(),
+                        0,
+                        window_context.meshes[0]
+                            .shaders
+                            .descriptor_set
+                            .as_ref()
+                            .expect("Descriptor sets not created for this shader")
+                            .clone(),
+                    )
+                    .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
+
+                // Draw functions are marked as unsafe in vulkano as shader safety needs to be followed
+                // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
+                unsafe {
+                    builder
+                        .draw(vertex_buffer.len() as u32, 1, 0, 0)
+                        .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
+                }
             }
 
             builder
@@ -628,9 +637,12 @@ fn create_frame_buffer(
         .collect()
 }
 
-pub(crate) fn init_vulkano(window_context: &mut WindowContext) {
+pub fn init_vulkano(window_context: &mut WindowContext) {
     let window_context = window_context;
-    let window = window_context.window.clone().unwrap();
+    let window = window_context
+        .window
+        .clone()
+        .expect("Error: Window needs to be set BEFORE vulkan is initialized.");
     let vulkan_instance = window_context
         .vulkan_instance
         .as_ref()
@@ -697,8 +709,8 @@ pub(crate) fn init_vulkano(window_context: &mut WindowContext) {
     window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
 
     // Create graphics pipeline and vertex buffers
-    let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
-    let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
+    //let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
+    //let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
     let vs_default =
         vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
     let fs_default =
@@ -713,59 +725,46 @@ pub(crate) fn init_vulkano(window_context: &mut WindowContext) {
     };
     window_context.viewport = viewport.clone();
 
-    // Create vertex buffer
-    // Left triangle
-    let vertex1 = MyVertex {
-        position: [0.0, 0.5],
-    };
-    let vertex2 = MyVertex {
-        position: [-0.5, -0.5],
-    };
-    let vertex3 = MyVertex {
-        position: [-1.0, 0.5],
-    };
-    let left_triangle = Mesh {
-        verticies: vec![vertex1, vertex2, vertex3],
-        shaders: Shaders {
-            vs: vs.clone(),
-            fs: fs.clone(),
-            descriptor_set: None,
-        },
-    };
-
-    // Right triangle
-    let vertex4 = MyVertex {
-        position: [1.0, 0.5],
-    };
-    let vertex5 = MyVertex {
-        position: [0.5, -0.5],
-    };
-    let vertex6 = MyVertex {
-        position: [0.0, 0.5],
-    };
-    let right_triangle = Mesh {
-        verticies: vec![vertex4, vertex5, vertex6],
-        shaders: Shaders {
-            vs: vs.clone(),
-            fs: fs.clone(),
-            descriptor_set: None,
-        },
-    };
-
-    // These need to be copied after the pipeline is created because create_pipelines puts a descriptor set in them
-    window_context.meshes.push(left_triangle.clone());
-    window_context.meshes.push(right_triangle.clone());
-
     window_context.pipelines = create_pipelines(window_context);
     if window_context.pipelines.is_empty() {
-        panic!("No pipelines were created!");
+        // This might mean there's no meshes in the pipeline
+        println!("Warning: No pipelines were created when initializing!");
     }
     println!("Successfully created graphics pipeline");
 
-    let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-    let verticies = combine_verticies(vec![left_triangle.verticies, right_triangle.verticies]);
+    // Put all verticies of all meshes into the vertex buffer
+    update_vertex_buffer(window_context);
+
+    let command_buffers = create_command_buffers(window_context);
+    println!("Successfully created command buffer");
+    window_context.command_buffers = Some(command_buffers);
+}
+
+fn update_vertex_buffer(window_context: &mut WindowContext) {
+    // Create new vertext buffer allocator if there isn't one already
+    if window_context.vertex_buffer_allocator.is_none() {
+        println!("No vertex buffer alloctor found, creating new one...");
+        let vertex_memory_allocator =
+            Arc::new(StandardMemoryAllocator::new_default(window_context.device.as_ref().unwrap().clone()));
+        window_context.vertex_buffer_allocator = Some(vertex_memory_allocator.clone());
+    }
+
+    // Put all verticies in all meshes in the vertex buffer
+    let mut verticies = vec![];
+    for mesh in &window_context.meshes {
+        verticies = combine_verticies(vec![verticies, mesh.verticies.clone()])
+    }
+
+    // Buffer::from_iter will panic if there's no verticies, so we'll make one vertex if there isn't one
+    if verticies.is_empty() {
+        verticies.push(MyVertex::new([0.0, 0.0]));
+    }
     let vertex_buffer = Buffer::from_iter(
-        vertex_memory_allocator.clone(),
+        window_context
+            .vertex_buffer_allocator
+            .as_ref()
+            .unwrap()
+            .clone(),
         BufferCreateInfo {
             usage: BufferUsage::VERTEX_BUFFER,
             ..Default::default()
@@ -779,18 +778,4 @@ pub(crate) fn init_vulkano(window_context: &mut WindowContext) {
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
     window_context.vertex_buffer = Some(vertex_buffer);
-
-    let command_buffers = create_command_buffers(window_context);
-    println!("Successfully created command buffer");
-    window_context.command_buffers = Some(command_buffers);
-}
-
-fn combine_verticies(verticies: Vec<Vec<MyVertex>>) -> Vec<MyVertex> {
-    let mut out: Vec<MyVertex> = Vec::new();
-    for mut vec in verticies {
-        out.try_reserve(vec.len())
-            .unwrap_or_else(|e| panic!("Could not combine verticies: {:?}", e));
-        out.append(&mut vec);
-    }
-    out
 }

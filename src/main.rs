@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use winit::window;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -10,6 +11,10 @@ use winit::{
 mod vgfx;
 use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
+
+use crate::mesh::{Mesh, MyVertex};
+use crate::vgfx::Shaders;
+mod mesh;
 
 #[derive(Default)]
 struct App {
@@ -35,6 +40,20 @@ impl ApplicationHandler for App {
             );
             self.window_contexts[i].window = Some(window);
             init_vulkano(&mut self.window_contexts[i]);
+
+            let mesh = Mesh::new(
+                vec![
+                    MyVertex::new([0.5, 0.5]),
+                    MyVertex::new([0.0, -0.5]),
+                    MyVertex::new([-0.5, 0.5]),
+                ],
+                Shaders {
+                    vs: self.window_contexts[i].default_vs.clone().unwrap(),
+                    fs: self.window_contexts[i].default_fs.clone().unwrap(),
+                    descriptor_set: None,
+                },
+            );
+            self.window_contexts[i].add_mesh(mesh).unwrap();
         }
         // This locks up the thread
         //self.window.first().unwrap().pre_present_notify();
@@ -89,10 +108,10 @@ fn main() {
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    let window_context = WindowContext::new(&event_loop);
+
     let mut app = App {
-        window_contexts: vec![
-            WindowContext::new(&event_loop)
-        ],
+        window_contexts: vec![window_context],
         ..Default::default()
     };
     event_loop.run_app(&mut app).unwrap_or_else(|err| {
