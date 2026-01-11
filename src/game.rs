@@ -6,7 +6,6 @@ use crate::mesh::{Mesh, MyVertex};
 
 pub enum RenderEvent {
     AddMesh(Mesh),
-    Ping,
 }
 
 pub fn game_main(to_render: mpsc::Sender<RenderEvent>) {
@@ -23,10 +22,10 @@ pub fn game_main(to_render: mpsc::Sender<RenderEvent>) {
             None,
         );
 		tri_count += 1;
-        println!("Mesh count {tri_count}");
+        //println!("Mesh count {tri_count}");
         to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
             .expect("Failed to send mesh data to render thread!");
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50));
     }
 }

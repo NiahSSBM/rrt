@@ -46,7 +46,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{ShaderModule, ShaderStages};
+use vulkano::shader::{EntryPoint, ShaderModule, ShaderStages};
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -55,7 +55,7 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
-use winit::window::Window;
+use winit::window::{self, Window};
 
 use crate::mesh::{Mesh, MyVertex, combine_verticies};
 
@@ -89,8 +89,8 @@ mod fs_default {
 
 #[derive(Clone)]
 pub struct Shaders {
-    pub vs: Arc<ShaderModule>,
-    pub fs: Arc<ShaderModule>,
+    pub vs: EntryPoint,
+    pub fs: EntryPoint,
     pub descriptor_set: Option<DescriptorSetWithOffsets>,
 }
 
@@ -102,6 +102,8 @@ pub struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
@@ -145,8 +147,6 @@ impl WindowContext {
         self.meshes.try_reserve(1)?;
         self.meshes.push(mesh);
 
-        update_vertex_buffer(self);
-
         Ok(self)
     }
 }
@@ -170,13 +170,12 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
 
 pub fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
-    let new_pipelines = create_pipelines(window_context);
+    window_context.pipelines = create_pipelines(window_context);
     if window_context.pipelines.is_empty() {
         println!(
             "Warning: No pipelines were created when resizing window! Are there any meshes to draw?"
         );
     }
-    window_context.pipelines = new_pipelines.clone();
     let new_command_buffers = create_command_buffers(window_context);
     window_context.command_buffers = Some(new_command_buffers);
 }
@@ -338,6 +337,11 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
+
+// TODO: 
+// Cache already created shaders so they don't need their own pipeline
+// Batch host/device buffer copies so it's not copied for every mesh
+// Execute the command buffer once, instead of for each mesh
 fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
@@ -349,26 +353,22 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     // Load shaders
     // If there are no shaders attached, the default ones are used instead
     for mesh in &mut window_context.meshes {
-        let vs = mesh
+        let vs = &mesh
             .shaders
             .as_ref()
             .unwrap_or(window_context.default_shaders.as_ref().unwrap())
-            .vs
-            .entry_point("main")
-            .unwrap();
-        let fs = mesh
+            .vs;
+        let fs = &mesh
             .shaders
             .as_ref()
             .unwrap_or(window_context.default_shaders.as_ref().unwrap())
-            .fs
-            .entry_point("main")
-            .unwrap();
+            .fs;
 
         let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
         let stages = [
-            PipelineShaderStageCreateInfo::new(vs),
-            PipelineShaderStageCreateInfo::new(fs),
+            PipelineShaderStageCreateInfo::new(vs.clone()),
+            PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
         let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
@@ -397,9 +397,15 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             ],
         };
 
-        let allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
+        // If there isn't an allocator already, make one
+        if window_context.host_buffer_allocator.is_none() {
+            window_context.host_buffer_allocator = Some(Arc::new(
+                GenericMemoryAllocator::new_default(device.clone()),
+            ));
+        }
+
         let host_buffer = Buffer::from_data(
-            allocator.clone(),
+            window_context.host_buffer_allocator.clone().unwrap(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
@@ -414,7 +420,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         .unwrap();
 
         let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
-            allocator.clone(),
+            window_context.host_buffer_allocator.clone().unwrap(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
                 ..Default::default()
@@ -426,12 +432,17 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         )
         .unwrap();
 
-        let allocator = Arc::new(StandardDescriptorSetAllocator::new(
-            device.clone(),
-            StandardDescriptorSetAllocatorCreateInfo::default(),
-        ));
+        // Create an allocator if we don't already have one
+        if window_context.descriptor_set_allocator.is_none() {
+            window_context.descriptor_set_allocator =
+                Some(Arc::new(StandardDescriptorSetAllocator::new(
+                    device.clone(),
+                    StandardDescriptorSetAllocatorCreateInfo::default(),
+                )));
+        }
+
         let descriptor_set = DescriptorSet::new_variable(
-            allocator,
+            window_context.descriptor_set_allocator.clone().unwrap(),
             descriptor_set_layouts[0].clone(),
             descriptor_set_layouts[0].variable_descriptor_count(),
             vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
@@ -487,30 +498,30 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         let subpass =
             Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
 
-        completed_pipelines.push(
-            GraphicsPipeline::new(
-                device.clone(),
-                None,
-                GraphicsPipelineCreateInfo {
-                    stages: stages.into_iter().collect(),
-                    vertex_input_state: Some(vertex_input_state),
-                    input_assembly_state: Some(InputAssemblyState::default()),
-                    viewport_state: Some(ViewportState {
-                        viewports: [window_context.viewport.clone()].into_iter().collect(),
-                        ..Default::default()
-                    }),
-                    rasterization_state: Some(RasterizationState::default()),
-                    multisample_state: Some(MultisampleState::default()),
-                    color_blend_state: Some(ColorBlendState::with_attachment_states(
-                        subpass.num_color_attachments(),
-                        ColorBlendAttachmentState::default(),
-                    )),
-                    subpass: Some(subpass.into()),
-                    ..GraphicsPipelineCreateInfo::layout(pipeline_layout)
-                },
-            )
-            .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err)),
-        );
+        let new_pipeline = GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState {
+                    viewports: [window_context.viewport.clone()].into_iter().collect(),
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    subpass.num_color_attachments(),
+                    ColorBlendAttachmentState::default(),
+                )),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(pipeline_layout)
+            },
+        )
+        .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
+
+        completed_pipelines.push(new_pipeline);
     }
 
     completed_pipelines
@@ -728,20 +739,18 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
 
     // Create graphics pipeline and vertex buffers
-    //let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
-    //let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
     let default_shaders = Shaders {
-        vs: vs_default::load(device.clone()).expect("Failed to create default vertex shader module!"),
-        fs: fs_default::load(device.clone()).expect("Failed to create default fragment shader module!"),
+        vs: vs_default::load(device.clone())
+            .expect("Failed to load default vertex shader module!")
+            .entry_point("main")
+            .expect("Couldn't find default vertex shader module entry point!"),
+        fs: fs_default::load(device.clone())
+            .expect("Failed to load default fragment shader module!")
+            .entry_point("main")
+            .expect("Couldn't find default fragment shader module entry point!"),
         descriptor_set: None,
     };
     window_context.default_shaders = Some(default_shaders);
-    //let vs_default =
-    //    vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
-    //let fs_default =
-    //    fs_default::load(device.clone()).expect("Failed to create default fragment shader module!");
-    //window_context.default_vs = Some(vs_default.clone());
-    //window_context.default_fs = Some(fs_default.clone());
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -765,7 +774,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     window_context.command_buffers = Some(command_buffers);
 }
 
-fn update_vertex_buffer(window_context: &mut WindowContext) {
+pub fn update_vertex_buffer(window_context: &mut WindowContext) {
     // Create new vertext buffer allocator if there isn't one already
     if window_context.vertex_buffer_allocator.is_none() {
         println!("No vertex buffer alloctor found, creating new one...");

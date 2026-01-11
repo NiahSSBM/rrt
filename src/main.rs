@@ -13,6 +13,7 @@ use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 
 use crate::game::RenderEvent;
+use crate::vgfx::update_vertex_buffer;
 mod game;
 mod mesh;
 
@@ -42,8 +43,6 @@ impl ApplicationHandler for App {
             self.window_contexts[i].window = Some(window);
             init_vulkano(&mut self.window_contexts[i]);
         }
-        // This locks up the thread
-        //self.window.first().unwrap().pre_present_notify();
     }
 
     fn window_event(
@@ -61,14 +60,13 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-                        match self.game_thread_receiver.as_ref().unwrap().try_recv() {
-                            Ok(event) => match event {
+                        for event in self.game_thread_receiver.as_ref().unwrap().try_iter() {
+                            match event {
                                 RenderEvent::AddMesh(mesh) => {
                                     window_context.add_mesh(mesh).unwrap();
-                                }
-                                RenderEvent::Ping => println!("Ping!"),
-                            },
-                            Err(_) => (),
+                                    update_vertex_buffer(window_context);
+                                },
+                            }
                         }
 
                         if window_context.resized || window_context.recreate_swapchain {
