@@ -5,7 +5,7 @@ use crate::vgfx::Shaders;
 #[derive(Clone)]
 pub struct Mesh {
     pub verticies: Vec<MyVertex>,
-    pub shaders: Shaders,
+    pub shaders: Option<Shaders>,
     _id: u32, // unused
 }
 
@@ -17,21 +17,19 @@ pub struct MyVertex {
 }
 
 impl Mesh {
-    pub fn new(verts: Vec<MyVertex>, shaders: Shaders) -> Self {
-		Self {
-			verticies: verts,
-			shaders: shaders,
-			_id: 0, // unused
-		}
-	}
+    pub fn new(verts: Vec<MyVertex>, shaders: Option<Shaders>) -> Self {
+        Self {
+            verticies: verts,
+            shaders: shaders,
+            _id: 0, // unused
+        }
+    }
 }
 
 impl MyVertex {
-	pub fn new(position: [f32; 2]) -> Self {
-		Self {
-			position: position,
-		}
-	}
+    pub fn new(position: [f32; 2]) -> Self {
+        Self { position: position }
+    }
 }
 
 pub fn combine_verticies(verts: Vec<Vec<MyVertex>>) -> Vec<MyVertex> {

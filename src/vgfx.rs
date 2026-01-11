@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
 use vs_default::vColor;
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
@@ -115,8 +115,7 @@ pub struct WindowContext {
     pub recreate_swapchain: bool,
     viewport: Viewport,
     pub last_resized: Option<Instant>,
-    pub default_vs: Option<Arc<ShaderModule>>,
-    pub default_fs: Option<Arc<ShaderModule>>,
+    pub default_shaders: Option<Shaders>,
 }
 
 impl WindowContext {
@@ -347,9 +346,23 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         println!("Warning: No meshes to load!");
     }
 
+    // Load shaders
+    // If there are no shaders attached, the default ones are used instead
     for mesh in &mut window_context.meshes {
-        let vs = mesh.shaders.vs.entry_point("main").unwrap();
-        let fs = mesh.shaders.fs.entry_point("main").unwrap();
+        let vs = mesh
+            .shaders
+            .as_ref()
+            .unwrap_or(window_context.default_shaders.as_ref().unwrap())
+            .vs
+            .entry_point("main")
+            .unwrap();
+        let fs = mesh
+            .shaders
+            .as_ref()
+            .unwrap_or(window_context.default_shaders.as_ref().unwrap())
+            .fs
+            .entry_point("main")
+            .unwrap();
 
         let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
@@ -427,7 +440,11 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         .unwrap();
         let descriptor_sets = DescriptorSetWithOffsets::new(descriptor_set, []);
 
-        mesh.shaders.descriptor_set = Some(descriptor_sets.clone());
+        // If we weren't provided any shaders we'll use the default ones
+        if mesh.shaders.is_none() {
+            mesh.shaders = window_context.default_shaders.clone();
+        }
+        mesh.shaders.as_mut().unwrap().descriptor_set = Some(descriptor_sets.clone());
 
         let pipeline_layout = PipelineLayout::new(
             device.clone(),
@@ -547,6 +564,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         0,
                         window_context.meshes[0]
                             .shaders
+                            .as_ref()
+                            .unwrap()
                             .descriptor_set
                             .as_ref()
                             .expect("Descriptor sets not created for this shader")
@@ -711,12 +730,18 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     // Create graphics pipeline and vertex buffers
     //let vs = vs::load(device.clone()).expect("Failed to create vertex shader module!");
     //let fs = fs::load(device.clone()).expect("Failed to create fragment shader module!");
-    let vs_default =
-        vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
-    let fs_default =
-        fs_default::load(device.clone()).expect("Failed to create default fragment shader module!");
-    window_context.default_vs = Some(vs_default.clone());
-    window_context.default_fs = Some(fs_default.clone());
+    let default_shaders = Shaders {
+        vs: vs_default::load(device.clone()).expect("Failed to create default vertex shader module!"),
+        fs: fs_default::load(device.clone()).expect("Failed to create default fragment shader module!"),
+        descriptor_set: None,
+    };
+    window_context.default_shaders = Some(default_shaders);
+    //let vs_default =
+    //    vs_default::load(device.clone()).expect("Failed to create default vertex shader module!");
+    //let fs_default =
+    //    fs_default::load(device.clone()).expect("Failed to create default fragment shader module!");
+    //window_context.default_vs = Some(vs_default.clone());
+    //window_context.default_fs = Some(fs_default.clone());
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -744,8 +769,9 @@ fn update_vertex_buffer(window_context: &mut WindowContext) {
     // Create new vertext buffer allocator if there isn't one already
     if window_context.vertex_buffer_allocator.is_none() {
         println!("No vertex buffer alloctor found, creating new one...");
-        let vertex_memory_allocator =
-            Arc::new(StandardMemoryAllocator::new_default(window_context.device.as_ref().unwrap().clone()));
+        let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
+            window_context.device.as_ref().unwrap().clone(),
+        ));
         window_context.vertex_buffer_allocator = Some(vertex_memory_allocator.clone());
     }
 
@@ -778,4 +804,5 @@ fn update_vertex_buffer(window_context: &mut WindowContext) {
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
     window_context.vertex_buffer = Some(vertex_buffer);
+    window_context.command_buffers = Some(create_command_buffers(window_context));
 }

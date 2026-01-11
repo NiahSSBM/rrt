@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
-
-use winit::window;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -12,13 +12,14 @@ mod vgfx;
 use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 
-use crate::mesh::{Mesh, MyVertex};
-use crate::vgfx::Shaders;
+use crate::game::RenderEvent;
+mod game;
 mod mesh;
 
 #[derive(Default)]
 struct App {
     window_contexts: Vec<WindowContext>,
+    game_thread_receiver: Option<Receiver<RenderEvent>>,
     resume_count: u32,
 }
 
@@ -40,20 +41,6 @@ impl ApplicationHandler for App {
             );
             self.window_contexts[i].window = Some(window);
             init_vulkano(&mut self.window_contexts[i]);
-
-            let mesh = Mesh::new(
-                vec![
-                    MyVertex::new([0.5, 0.5]),
-                    MyVertex::new([0.0, -0.5]),
-                    MyVertex::new([-0.5, 0.5]),
-                ],
-                Shaders {
-                    vs: self.window_contexts[i].default_vs.clone().unwrap(),
-                    fs: self.window_contexts[i].default_fs.clone().unwrap(),
-                    descriptor_set: None,
-                },
-            );
-            self.window_contexts[i].add_mesh(mesh).unwrap();
         }
         // This locks up the thread
         //self.window.first().unwrap().pre_present_notify();
@@ -74,6 +61,16 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
+                        match self.game_thread_receiver.as_ref().unwrap().try_recv() {
+                            Ok(event) => match event {
+                                RenderEvent::AddMesh(mesh) => {
+                                    window_context.add_mesh(mesh).unwrap();
+                                }
+                                RenderEvent::Ping => println!("Ping!"),
+                            },
+                            Err(_) => (),
+                        }
+
                         if window_context.resized || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
                             recreate_swapchain(window_context);
@@ -104,16 +101,27 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    let (to_render, from_game) = mpsc::channel();
+    thread::spawn(|| {
+        game::game_main(to_render);
+    });
+
+    // Start initializing the window
+    // The window is handled by the main thread, which listens and handles events from the OS like redraw request
     let event_loop = EventLoop::new()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    // Additional windows can be added by simply creating another window context and adding it to the app window array below
     let window_context = WindowContext::new(&event_loop);
 
     let mut app = App {
         window_contexts: vec![window_context],
+        game_thread_receiver: Some(from_game),
         ..Default::default()
     };
+
+    // Execution is blocked here until the event loop is exited when the user closes the window
     event_loop.run_app(&mut app).unwrap_or_else(|err| {
         panic!(
             "Event loop couldn't be created or exited with and error: {:?}",
