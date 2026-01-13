@@ -1,26 +1,28 @@
+mod game;
+mod mesh;
+pub mod shader;
+mod vgfx;
+
+use std::f64::consts::E;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+use vgfx::WindowContext;
+use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
-mod vgfx;
-use vgfx::WindowContext;
-use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 
-use crate::game::RenderEvent;
+use crate::game::{GameData, RenderEvent};
 use crate::vgfx::update_vertex_buffer;
-mod game;
-mod mesh;
 
 #[derive(Default)]
 struct App {
     window_contexts: Vec<WindowContext>,
-    game_thread_receiver: Option<Receiver<RenderEvent>>,
     resume_count: u32,
 }
 
@@ -42,6 +44,16 @@ impl ApplicationHandler for App {
             );
             self.window_contexts[i].window = Some(window);
             init_vulkano(&mut self.window_contexts[i]);
+
+            let (to_render, from_game) = mpsc::channel();
+            let game_data = GameData {
+                to_render,
+                render_device: self.window_contexts[i].device.clone().unwrap(),
+            };
+            self.window_contexts[i].game_thread_receiver = Some(from_game);
+            thread::spawn(|| {
+                game::game_main(game_data);
+            });
         }
     }
 
@@ -60,13 +72,28 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-                        for event in self.game_thread_receiver.as_ref().unwrap().try_iter() {
-                            match event {
+                        let mut should_update_buffers = false;
+
+                        // Get one event sent from game thread
+                        let event = window_context
+                            .game_thread_receiver
+                            .as_ref()
+                            .unwrap()
+                            .try_recv();
+                        match event {
+                            Ok(e) => match e {
+                                // Right now the only thing the game thread sending over is meshes to add
                                 RenderEvent::AddMesh(mesh) => {
+                                    println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
-                                    update_vertex_buffer(window_context);
-                                },
-                            }
+                                    should_update_buffers = true;
+                                }
+                            },
+                            Err(_) => (),
+                        }
+                        // This only triggers if a mesh was added
+                        if should_update_buffers {
+                            update_vertex_buffer(window_context);
                         }
 
                         if window_context.resized || window_context.recreate_swapchain {
@@ -99,11 +126,6 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    let (to_render, from_game) = mpsc::channel();
-    thread::spawn(|| {
-        game::game_main(to_render);
-    });
-
     // Start initializing the window
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
     let event_loop = EventLoop::new()
@@ -115,7 +137,6 @@ fn main() {
 
     let mut app = App {
         window_contexts: vec![window_context],
-        game_thread_receiver: Some(from_game),
         ..Default::default()
     };
 

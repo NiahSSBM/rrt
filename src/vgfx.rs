@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, TryReserveError};
 
 use std::sync::Arc;
 
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
 use vs_default::vColor;
@@ -46,7 +47,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{EntryPoint, ShaderModule, ShaderStages};
+use vulkano::shader::{EntryPoint, ShaderStages};
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -55,50 +56,17 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
-use winit::window::{self, Window};
+use winit::window::Window;
 
+use crate::game::RenderEvent;
 use crate::mesh::{Mesh, MyVertex, combine_verticies};
-
-//mod vs {
-//    vulkano_shaders::shader! {
-//        ty: "vertex",
-//        path: "shaders/vert.glsl",
-//    }
-//}
-//
-//mod fs {
-//    vulkano_shaders::shader! {
-//        ty: "fragment",
-//        path: "shaders/frag.glsl",
-//    }
-//}
-
-mod vs_default {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "shaders/vert.glsl",
-    }
-}
-
-mod fs_default {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "shaders/frag.glsl",
-    }
-}
-
-#[derive(Clone)]
-pub struct Shaders {
-    pub vs: EntryPoint,
-    pub fs: EntryPoint,
-    pub descriptor_set: Option<DescriptorSetWithOffsets>,
-}
+use crate::shader::{Shaders, fs_default, vs_default};
 
 #[derive(Default)]
 pub struct WindowContext {
     pub window: Option<Arc<Window>>,
     pub vulkan_instance: Option<Arc<Instance>>,
-    device: Option<Arc<Device>>,
+    pub device: Option<Arc<Device>>,
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
@@ -118,6 +86,7 @@ pub struct WindowContext {
     viewport: Viewport,
     pub last_resized: Option<Instant>,
     pub default_shaders: Option<Shaders>,
+    pub game_thread_receiver: Option<Receiver<RenderEvent>>,
 }
 
 impl WindowContext {
@@ -337,8 +306,7 @@ fn create_swapchain(
     return Swapchain::new(device, surface, swapchain_create_info);
 }
 
-
-// TODO: 
+// TODO:
 // Cache already created shaders so they don't need their own pipeline
 // Batch host/device buffer copies so it's not copied for every mesh
 // Execute the command buffer once, instead of for each mesh
@@ -537,7 +505,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
     window_context
         .framebuffer
         .clone()
-        .unwrap()
+        .expect("ERROR: There's no frame buffer!")
         .iter()
         .map(|framebuffer| {
             let mut builder = AutoCommandBufferBuilder::primary(
@@ -554,7 +522,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())], // Background color
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
                     SubpassBeginInfo {
@@ -563,17 +531,20 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     },
                 )
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
-            if !pipelines.is_empty() {
+
+            let mut i = 0;
+            // Each shader gets it's own pipeline
+            for pipeline in &pipelines {
                 builder
-                    .bind_pipeline_graphics(pipelines[0].clone())
+                    .bind_pipeline_graphics(pipeline.clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
                     .bind_vertex_buffers(0, vertex_buffer.clone())
                     .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
                     .bind_descriptor_sets(
                         PipelineBindPoint::Graphics,
-                        pipelines[0].layout().clone(),
+                        pipeline.layout().clone(),
                         0,
-                        window_context.meshes[0]
+                        window_context.meshes[0] // TODO: Create the proper descriptor set for each mesh
                             .shaders
                             .as_ref()
                             .unwrap()
@@ -584,13 +555,17 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 
+                // SAFETY:
                 // Draw functions are marked as unsafe in vulkano as shader safety needs to be followed
                 // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
                 unsafe {
+                    // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
+                    // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw(vertex_buffer.len() as u32, 1, 0, 0)
+                        .draw((vertex_buffer.len() as u32) / (window_context.meshes.len() as u32), 1, i, 0)
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
+                i += (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32);
             }
 
             builder
@@ -739,7 +714,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
 
     // Create graphics pipeline and vertex buffers
-    let default_shaders = Shaders {
+    window_context.default_shaders = Some(Shaders {
         vs: vs_default::load(device.clone())
             .expect("Failed to load default vertex shader module!")
             .entry_point("main")
@@ -749,8 +724,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
             .entry_point("main")
             .expect("Couldn't find default fragment shader module entry point!"),
         descriptor_set: None,
-    };
-    window_context.default_shaders = Some(default_shaders);
+    });
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -813,5 +787,6 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
     window_context.vertex_buffer = Some(vertex_buffer);
+    window_context.pipelines = create_pipelines(window_context);
     window_context.command_buffers = Some(create_command_buffers(window_context));
 }

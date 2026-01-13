@@ -1,6 +1,6 @@
 use vulkano::{buffer::BufferContents, pipeline::graphics::vertex_input::Vertex};
 
-use crate::vgfx::Shaders;
+use crate::shader::Shaders;
 
 #[derive(Clone)]
 pub struct Mesh {
