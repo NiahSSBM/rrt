@@ -47,7 +47,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{EntryPoint, ShaderStages};
+use vulkano::shader::ShaderStages;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -313,14 +313,34 @@ fn create_swapchain(
 fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
+    let mut host_buffers: Vec<Subbuffer<vColor>> = Vec::new();
+    let mut device_buffers: Vec<Subbuffer<vColor>> = Vec::new();
+
+    // Create some allocators if we don't already have them
+    if window_context.host_buffer_allocator.is_none() {
+        window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
+            device.clone(),
+        )));
+    }
+    if window_context.descriptor_set_allocator.is_none() {
+        window_context.descriptor_set_allocator =
+            Some(Arc::new(StandardDescriptorSetAllocator::new(
+                device.clone(),
+                StandardDescriptorSetAllocatorCreateInfo::default(),
+            )));
+    }
 
     if window_context.meshes.is_empty() {
+        // Not fatal, a default mesh with 1 vertex is created later in this case
         println!("Warning: No meshes to load!");
     }
 
-    // Load shaders
     // If there are no shaders attached, the default ones are used instead
+    let mut x = 0;
     for mesh in &mut window_context.meshes {
+        let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
+        let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
+
         let vs = &mesh
             .shaders
             .as_ref()
@@ -339,7 +359,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
-        let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
         let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
         let binding = DescriptorSetLayoutBinding {
             descriptor_count: 1,
@@ -347,6 +366,28 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             immutable_samplers: Vec::new(),
             ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
         };
+
+        // Temp data for each descriptor set
+        let mut data = vs_default::vColor {
+            colors: [
+                [0.0, 1.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 1.0, 0.0].into(),
+            ],
+        };
+        if x == 0 {
+            data = vs_default::vColor {
+                colors: [
+                    [0.0, 0.0, 1.0].into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [0.0, 0.0, 1.0].into(),
+                ],
+            };
+        }
+        x += 1;
+
+        // Set a binding and layout for each stage
+        // Each stage gets its own descriptor set
         for i in 0..stages.len() {
             bindings.insert(i as u32, binding.clone());
             let create_info = DescriptorSetLayoutCreateInfo {
@@ -355,75 +396,62 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 ..Default::default()
             };
             let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
-            descriptor_set_layouts.push(layout);
+            descriptor_set_layouts.push(layout.clone());
+
+            // Copy our descriptor data into a buffer located in host memory
+            // This will get copied over to device memory later
+            let host_buffer = Buffer::from_data(
+                window_context.host_buffer_allocator.clone().unwrap(),
+                BufferCreateInfo {
+                    usage: BufferUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                data,
+            )
+            .unwrap();
+
+            // Create a target memory buffer on the device to copy our descriptor set to
+            let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
+                window_context.host_buffer_allocator.clone().unwrap(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            host_buffers.push(host_buffer.clone());
+            device_buffers.push(device_buffer.clone());
+
+            // Here we specify the allocated device memory is for a descriptor set with our layout
+            let descriptor_set = DescriptorSet::new_variable(
+                window_context.descriptor_set_allocator.clone().unwrap(),
+                layout.clone(),
+                layout.variable_descriptor_count(),
+                vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
+                vec![],
+            )
+            .unwrap();
+
+            // This vector holds the descriptor set for each pipeline stage
+            descriptor_sets.push(DescriptorSetWithOffsets::new(descriptor_set, []));
+
+            // If we weren't provided any shaders we'll use the default ones
+            if mesh.shaders.is_none() {
+                mesh.shaders = window_context.default_shaders.clone();
+            }
         }
-        let data = vs_default::vColor {
-            colors: [
-                [1.0, 0.0, 0.0].into(),
-                [0.0, 1.0, 0.0].into(),
-                [0.0, 0.0, 1.0].into(),
-            ],
-        };
 
-        // If there isn't an allocator already, make one
-        if window_context.host_buffer_allocator.is_none() {
-            window_context.host_buffer_allocator = Some(Arc::new(
-                GenericMemoryAllocator::new_default(device.clone()),
-            ));
-        }
-
-        let host_buffer = Buffer::from_data(
-            window_context.host_buffer_allocator.clone().unwrap(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            data,
-        )
-        .unwrap();
-
-        let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
-            window_context.host_buffer_allocator.clone().unwrap(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        // Create an allocator if we don't already have one
-        if window_context.descriptor_set_allocator.is_none() {
-            window_context.descriptor_set_allocator =
-                Some(Arc::new(StandardDescriptorSetAllocator::new(
-                    device.clone(),
-                    StandardDescriptorSetAllocatorCreateInfo::default(),
-                )));
-        }
-
-        let descriptor_set = DescriptorSet::new_variable(
-            window_context.descriptor_set_allocator.clone().unwrap(),
-            descriptor_set_layouts[0].clone(),
-            descriptor_set_layouts[0].variable_descriptor_count(),
-            vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
-            vec![],
-        )
-        .unwrap();
-        let descriptor_sets = DescriptorSetWithOffsets::new(descriptor_set, []);
-
-        // If we weren't provided any shaders we'll use the default ones
-        if mesh.shaders.is_none() {
-            mesh.shaders = window_context.default_shaders.clone();
-        }
-        mesh.shaders.as_mut().unwrap().descriptor_set = Some(descriptor_sets.clone());
+        mesh.shaders.as_mut().unwrap().descriptor_sets = descriptor_sets.clone();
 
         let pipeline_layout = PipelineLayout::new(
             device.clone(),
@@ -436,6 +464,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         )
         .unwrap();
 
+        // Setup a one-time command buffer to send our host buffer to the device buffer
         let mut cbb = AutoCommandBufferBuilder::primary(
             window_context
                 .command_buffer_allocator
@@ -446,8 +475,13 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-        cbb.copy_buffer(CopyBufferInfo::buffers(host_buffer, device_buffer.clone()))
+        for i in 0..host_buffers.len() {
+            cbb.copy_buffer(CopyBufferInfo::buffers(
+                host_buffers[i].clone(),
+                device_buffers[i].clone(),
+            ))
             .unwrap();
+        }
         cbb.bind_descriptor_sets(
             PipelineBindPoint::Graphics,
             pipeline_layout.clone(),
@@ -532,26 +566,24 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 )
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
 
-            let mut i = 0;
             // Each shader gets it's own pipeline
             for pipeline in &pipelines {
                 builder
                     .bind_pipeline_graphics(pipeline.clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
                     .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
+                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
+            }
+
+            let mut pipe_i = 0;
+            let mut vert_i = 0;
+            for mesh in &window_context.meshes {
+                builder
                     .bind_descriptor_sets(
                         PipelineBindPoint::Graphics,
-                        pipeline.layout().clone(),
+                        pipelines[pipe_i].layout().clone(),
                         0,
-                        window_context.meshes[0] // TODO: Create the proper descriptor set for each mesh
-                            .shaders
-                            .as_ref()
-                            .unwrap()
-                            .descriptor_set
-                            .as_ref()
-                            .expect("Descriptor sets not created for this shader")
-                            .clone(),
+                        mesh.shaders.as_ref().unwrap().descriptor_sets.clone(),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 
@@ -562,10 +594,16 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
                     // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw((vertex_buffer.len() as u32) / (window_context.meshes.len() as u32), 1, i, 0)
+                        .draw(
+                            (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32),
+                            1,
+                            vert_i,
+                            0,
+                        )
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
-                i += (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32);
+                vert_i += (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32);
+                pipe_i += 1;
             }
 
             builder
@@ -723,7 +761,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
             .expect("Failed to load default fragment shader module!")
             .entry_point("main")
             .expect("Couldn't find default fragment shader module entry point!"),
-        descriptor_set: None,
+        descriptor_sets: vec![],
     });
 
     let viewport = Viewport {

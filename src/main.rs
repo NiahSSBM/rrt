@@ -3,8 +3,6 @@ mod mesh;
 pub mod shader;
 mod vgfx;
 
-use std::f64::consts::E;
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};

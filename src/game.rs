@@ -1,7 +1,5 @@
 use std::sync::Arc;
-use std::{sync::mpsc, thread, time::Duration};
-
-use rand::Rng;
+use std::sync::mpsc;
 
 use crate::mesh::{Mesh, MyVertex};
 use crate::shader::{Shaders, fs, vs};
@@ -46,7 +44,7 @@ pub fn game_main(data: GameData) {
         Some(Shaders {
             vs,
             fs,
-            descriptor_set: None,
+            descriptor_sets: vec![],
         }),
     );
     meshes.push(mesh);

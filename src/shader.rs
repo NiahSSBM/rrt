@@ -4,7 +4,7 @@ use vulkano::{descriptor_set::DescriptorSetWithOffsets, shader::EntryPoint};
 pub struct Shaders {
     pub vs: EntryPoint,
     pub fs: EntryPoint,
-    pub descriptor_set: Option<DescriptorSetWithOffsets>,
+    pub descriptor_sets: Vec<DescriptorSetWithOffsets>,
 }
 
 pub mod vs_default {
