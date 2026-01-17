@@ -81,10 +81,10 @@ pub struct WindowContext {
     render_pass: Option<Arc<RenderPass>>,
     meshes: Vec<Mesh>,
     previous_fence_i: u32,
-    pub resized: bool,
+    pub should_resize: bool,
+    pub last_resized: Option<Instant>,
     pub recreate_swapchain: bool,
     viewport: Viewport,
-    pub last_resized: Option<Instant>,
     pub default_shaders: Option<Shaders>,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
 }

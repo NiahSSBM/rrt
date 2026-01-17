@@ -71,6 +71,13 @@ impl ApplicationHandler for App {
                     }
                     WindowEvent::RedrawRequested => {
                         let mut should_update_buffers = false;
+                        
+                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
+                        if window_context.last_resized.unwrap().elapsed()
+                            > Duration::from_secs_f32(0.5)
+                        {
+                            window_context.should_resize = true;
+                        }
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -94,12 +101,12 @@ impl ApplicationHandler for App {
                             update_vertex_buffer(window_context);
                         }
 
-                        if window_context.resized || window_context.recreate_swapchain {
+                        if window_context.should_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
                             recreate_swapchain(window_context);
 
-                            if window_context.resized {
-                                window_context.resized = false;
+                            if window_context.should_resize {
+                                window_context.should_resize = false;
                                 window_context.last_resized = Some(Instant::now());
                                 resize_window(window_context);
                             }
@@ -109,12 +116,12 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
-                        let last_resized = window_context
-                            .last_resized
-                            .unwrap_or(Instant::now() - Duration::from_secs(5));
-                        if last_resized.elapsed() > Duration::from_secs_f32(1.0) {
-                            window_context.resized = true;
-                        }
+                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
+                        window_context.last_resized = Some(
+                            window_context
+                                .last_resized
+                                .unwrap_or(Instant::now()),
+                        );
                     }
                     _ => (), //println!("Event received: {:?}", event),
                 }
