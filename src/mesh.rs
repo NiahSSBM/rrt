@@ -5,7 +5,7 @@ use crate::shader::Shaders;
 #[derive(Clone)]
 pub struct Mesh {
     pub verticies: Vec<MyVertex>,
-    pub shaders: Option<Shaders>,
+    pub shaders: Shaders,
     _id: u32, // unused
 }
 
@@ -17,7 +17,7 @@ pub struct MyVertex {
 }
 
 impl Mesh {
-    pub fn new(verts: Vec<MyVertex>, shaders: Option<Shaders>) -> Self {
+    pub fn new(verts: Vec<MyVertex>, shaders: Shaders) -> Self {
         Self {
             verticies: verts,
             shaders: shaders,

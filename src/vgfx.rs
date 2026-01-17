@@ -60,7 +60,7 @@ use winit::window::Window;
 
 use crate::game::RenderEvent;
 use crate::mesh::{Mesh, MyVertex, combine_verticies};
-use crate::shader::{Shaders, fs_default, vs_default};
+use crate::shader::{ShaderType, vs_default};
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -85,7 +85,6 @@ pub struct WindowContext {
     pub last_resized: Option<Instant>,
     pub recreate_swapchain: bool,
     viewport: Viewport,
-    pub default_shaders: Option<Shaders>,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
 }
 
@@ -262,7 +261,6 @@ fn create_device(
             ..Default::default()
         },
         enabled_features: DeviceFeatures {
-            //descriptor_binding_update_unused_while_pending: true,
             ..Default::default()
         },
         ..Default::default()
@@ -341,22 +339,21 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
         let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
 
-        let vs = &mesh
-            .shaders
-            .as_ref()
-            .unwrap_or(window_context.default_shaders.as_ref().unwrap())
-            .vs;
-        let fs = &mesh
-            .shaders
-            .as_ref()
-            .unwrap_or(window_context.default_shaders.as_ref().unwrap())
-            .fs;
+        // TODO: Identify if a shader is a vertex or a fragment shader without specifying manually here
 
-        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
+        let vs = mesh
+            .shaders.loaded.get(&ShaderType::VertexDefault)
+            .unwrap();
+        let fs = mesh
+            .shaders.loaded.get(&ShaderType::FragmentDefault)
+            .unwrap();
 
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs.entry_point).unwrap();
+
+        // TODO: Dynamically input arbitrary number of shaders
         let stages = [
-            PipelineShaderStageCreateInfo::new(vs.clone()),
-            PipelineShaderStageCreateInfo::new(fs.clone()),
+            PipelineShaderStageCreateInfo::new(vs.entry_point.clone()),
+            PipelineShaderStageCreateInfo::new(fs.entry_point.clone()),
         ];
 
         let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
@@ -388,8 +385,11 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
         // Set a binding and layout for each stage
         // Each stage gets its own descriptor set
-        for i in 0..stages.len() {
+        let mut i = 0;
+        for shader in mesh.shaders.loaded.values_mut() {
+            // TODO: Do bindings need to be inserted like this?
             bindings.insert(i as u32, binding.clone());
+
             let create_info = DescriptorSetLayoutCreateInfo {
                 flags: Default::default(),
                 bindings: bindings.clone(),
@@ -444,14 +444,10 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
             // This vector holds the descriptor set for each pipeline stage
             descriptor_sets.push(DescriptorSetWithOffsets::new(descriptor_set, []));
+            shader.descriptor_set = Some(descriptor_sets[i].clone());
+            i += 1;
 
-            // If we weren't provided any shaders we'll use the default ones
-            if mesh.shaders.is_none() {
-                mesh.shaders = window_context.default_shaders.clone();
-            }
         }
-
-        mesh.shaders.as_mut().unwrap().descriptor_sets = descriptor_sets.clone();
 
         let pipeline_layout = PipelineLayout::new(
             device.clone(),
@@ -583,7 +579,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[pipe_i].layout().clone(),
                         0,
-                        mesh.shaders.as_ref().unwrap().descriptor_sets.clone(),
+                        mesh.shaders.get_descriptor_sets(),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 
@@ -750,19 +746,6 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
         Default::default(),
     ));
     window_context.command_buffer_allocator = Some(command_buffer_allocator.clone());
-
-    // Create graphics pipeline and vertex buffers
-    window_context.default_shaders = Some(Shaders {
-        vs: vs_default::load(device.clone())
-            .expect("Failed to load default vertex shader module!")
-            .entry_point("main")
-            .expect("Couldn't find default vertex shader module entry point!"),
-        fs: fs_default::load(device.clone())
-            .expect("Failed to load default fragment shader module!")
-            .entry_point("main")
-            .expect("Couldn't find default fragment shader module entry point!"),
-        descriptor_sets: vec![],
-    });
 
     let viewport = Viewport {
         offset: [0.0, 0.0],

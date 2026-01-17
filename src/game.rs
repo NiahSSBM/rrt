@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use crate::mesh::{Mesh, MyVertex};
-use crate::shader::{Shaders, fs, vs};
+use crate::shader::ShaderType;
+use crate::shader::{Shaders};
 
 pub enum RenderEvent {
     AddMesh(Mesh),
@@ -12,18 +13,26 @@ pub enum RenderEvent {
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
     pub render_device: Arc<vulkano::device::Device>,
+    pub available_shaders: Shaders
 }
 
-pub fn game_main(data: GameData) {
-    //let mut tri_count = 0;
-    let vs = vs::load(data.render_device.clone())
-        .expect("Failed to load custom vertex shader module!")
-        .entry_point("main")
-        .expect("Couldn't find custom vertex shader module entry point!");
-    let fs = fs::load(data.render_device.clone())
-        .expect("Failed to load custom vertex shader module!")
-        .entry_point("main")
-        .expect("Couldn't find custom vertex shader module entry point!");
+pub fn game_main(mut data: GameData) {
+    // Initialize shaders
+    data.available_shaders.load(ShaderType::VertexDefault, data.render_device.clone());
+    data.available_shaders.load(ShaderType::VertexCustom, data.render_device.clone());
+
+    data.available_shaders.load(ShaderType::FragmentDefault, data.render_device.clone());
+    data.available_shaders.load(ShaderType::FragmentCustom, data.render_device.clone());
+    data.available_shaders.load(ShaderType::FragmentWireframe, data.render_device.clone());
+
+    // Only use needed shaders for each mesh
+    let mut first_tri_shaders = Shaders::new();
+    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
+    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
+
+    let mut second_tri_shaders = Shaders::new();
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
 
     let mut meshes = vec![];
     let mesh = Mesh::new(
@@ -32,7 +41,7 @@ pub fn game_main(data: GameData) {
             MyVertex::new([-0.5, -0.5]),
             MyVertex::new([-1.0, 0.5]),
         ],
-        None,
+        first_tri_shaders,
     );
     meshes.push(mesh);
     let mesh = Mesh::new(
@@ -41,11 +50,7 @@ pub fn game_main(data: GameData) {
             MyVertex::new([0.5, -0.5]),
             MyVertex::new([0.0, 0.5]),
         ],
-        Some(Shaders {
-            vs,
-            fs,
-            descriptor_sets: vec![],
-        }),
+        second_tri_shaders
     );
     meshes.push(mesh);
     for mesh in meshes {

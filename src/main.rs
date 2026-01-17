@@ -16,6 +16,7 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
+use crate::shader::Shaders;
 use crate::vgfx::update_vertex_buffer;
 
 #[derive(Default)]
@@ -47,6 +48,7 @@ impl ApplicationHandler for App {
             let game_data = GameData {
                 to_render,
                 render_device: self.window_contexts[i].device.clone().unwrap(),
+                available_shaders: Shaders::new(),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             thread::spawn(|| {
