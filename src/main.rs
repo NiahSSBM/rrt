@@ -73,13 +73,6 @@ impl ApplicationHandler for App {
                     }
                     WindowEvent::RedrawRequested => {
                         let mut should_update_buffers = false;
-                        
-                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
-                        if window_context.last_resized.unwrap().elapsed()
-                            > Duration::from_secs_f32(0.5)
-                        {
-                            window_context.should_resize = true;
-                        }
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -102,6 +95,15 @@ impl ApplicationHandler for App {
                         if should_update_buffers {
                             update_vertex_buffer(window_context);
                         }
+                        
+                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
+                        if window_context.last_resized.unwrap().elapsed()
+                            > Duration::from_secs_f32(0.5) && window_context.requested_resize
+                        {
+                            window_context.last_resized = Some(Instant::now());
+                            window_context.should_resize = true;
+                            window_context.requested_resize = false;
+                        }
 
                         if window_context.should_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
@@ -109,7 +111,6 @@ impl ApplicationHandler for App {
 
                             if window_context.should_resize {
                                 window_context.should_resize = false;
-                                window_context.last_resized = Some(Instant::now());
                                 resize_window(window_context);
                             }
                         }
@@ -124,6 +125,7 @@ impl ApplicationHandler for App {
                                 .last_resized
                                 .unwrap_or(Instant::now()),
                         );
+                        window_context.requested_resize = true;
                     }
                     _ => (), //println!("Event received: {:?}", event),
                 }

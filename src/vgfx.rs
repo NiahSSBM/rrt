@@ -82,6 +82,7 @@ pub struct WindowContext {
     meshes: Vec<Mesh>,
     previous_fence_i: u32,
     pub should_resize: bool,
+    pub requested_resize: bool,
     pub last_resized: Option<Instant>,
     pub recreate_swapchain: bool,
     viewport: Viewport,
@@ -138,6 +139,7 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
 
 pub fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
+    println!("Resizing window");
     window_context.pipelines = create_pipelines(window_context);
     if window_context.pipelines.is_empty() {
         println!(
