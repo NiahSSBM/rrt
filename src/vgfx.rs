@@ -342,8 +342,14 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
         let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
 
-        let vs = mesh.shaders.get_entry(ExecutionModel::Vertex).expect("Error: No vertex shader found!");
-        let fs = mesh.shaders.get_entry(ExecutionModel::Fragment).expect("Error: No fragment shader found!");
+        let vs = mesh
+            .shaders
+            .get_entry(ExecutionModel::Vertex)
+            .expect("Error: No vertex shader found!");
+        let fs = mesh
+            .shaders
+            .get_entry(ExecutionModel::Fragment)
+            .expect("Error: No fragment shader found!");
 
         let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
@@ -522,12 +528,11 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 }
 
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    let pipelines = window_context.pipelines.clone();
+    let pipelines = &window_context.pipelines;
     let vertex_buffer = window_context
         .vertex_buffer
         .as_ref()
-        .expect("ERROR: There's no vertex buffer!")
-        .clone();
+        .expect("ERROR: There's no vertex buffer!");
     window_context
         .framebuffer
         .clone()
@@ -558,22 +563,20 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 )
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
 
-            // Each shader gets it's own pipeline
-            for pipeline in &pipelines {
+            // Bind the shader pipeline, verticies, and descriptor sets for each mesh
+            // Currently this assumes each mesh is only 1 tri
+            for (i, mesh) in window_context.meshes.iter().enumerate() {
+                let vertex_buffer_slice = vertex_buffer
+                    .clone()
+                    .slice((3 * i) as u64..(3 * (i + 1)) as u64);
                 builder
-                    .bind_pipeline_graphics(pipeline.clone())
+                    .bind_pipeline_graphics(pipelines[i].clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
-                    .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err));
-            }
-
-            let mut pipe_i = 0;
-            let mut vert_i = 0;
-            for mesh in &window_context.meshes {
-                builder
+                    .bind_vertex_buffers(0, vertex_buffer_slice.clone())
+                    .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
                     .bind_descriptor_sets(
                         PipelineBindPoint::Graphics,
-                        pipelines[pipe_i].layout().clone(),
+                        pipelines[i].layout().clone(),
                         0,
                         mesh.shaders.get_descriptor_sets(),
                     )
@@ -586,16 +589,9 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
                     // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw(
-                            (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32),
-                            1,
-                            vert_i,
-                            0,
-                        )
+                        .draw(vertex_buffer_slice.len() as u32, 1, 0, 0)
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
-                vert_i += (vertex_buffer.len() as u32) / (window_context.meshes.len() as u32);
-                pipe_i += 1;
             }
 
             builder
