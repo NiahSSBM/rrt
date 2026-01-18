@@ -31,8 +31,8 @@ pub fn game_main(mut data: GameData) {
     first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
 
     let mut second_tri_shaders = Shaders::new();
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexCustom);
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentCustom);
 
     let mut meshes = vec![];
     let mesh = Mesh::new(

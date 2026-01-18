@@ -1,5 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
-use vulkano::{descriptor_set::DescriptorSetWithOffsets, shader::EntryPoint};
+use vulkano::{
+    descriptor_set::DescriptorSetWithOffsets,
+    shader::{EntryPoint, spirv::ExecutionModel},
+};
 
 #[derive(Eq, Hash, PartialEq, Clone)]
 pub enum ShaderType {
@@ -43,8 +46,26 @@ impl Shaders {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
             out.push(shader.descriptor_set.clone().unwrap());
-        };
+        }
         out
+    }
+
+    pub fn get_entry(&self, execution_model: ExecutionModel) -> Option<&EntryPoint> {
+        let mut entry: Option<&EntryPoint> = None;
+        for shader in self.loaded.values() {
+            let current = &shader.entry_point;
+            if current.info().execution_model == execution_model {
+                // I'm not sure yet what to do with multiple shaders
+                // It's probably a normal thing to do but IDK yet
+                if entry.is_some() {
+                    panic!(
+                        "Error: More than one {execution_model:?} shader found! Only one {execution_model:?} shader per mesh is supported currently"
+                    );
+                }
+                entry = Some(&shader.entry_point);
+            }
+        }
+        entry
     }
 
     // TODO: Return an actual error when a shader isn't found

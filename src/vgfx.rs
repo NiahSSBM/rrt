@@ -48,6 +48,7 @@ use vulkano::pipeline::{
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderStages;
+use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -60,7 +61,7 @@ use winit::window::Window;
 
 use crate::game::RenderEvent;
 use crate::mesh::{Mesh, MyVertex, combine_verticies};
-use crate::shader::{ShaderType, vs_default};
+use crate::shader::{ShaderType, ShaderWithDescriptors, vs_default};
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -341,21 +342,15 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
         let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
 
-        // TODO: Identify if a shader is a vertex or a fragment shader without specifying manually here
+        let vs = mesh.shaders.get_entry(ExecutionModel::Vertex).expect("Error: No vertex shader found!");
+        let fs = mesh.shaders.get_entry(ExecutionModel::Fragment).expect("Error: No fragment shader found!");
 
-        let vs = mesh
-            .shaders.loaded.get(&ShaderType::VertexDefault)
-            .unwrap();
-        let fs = mesh
-            .shaders.loaded.get(&ShaderType::FragmentDefault)
-            .unwrap();
-
-        let vertex_input_state = MyVertex::per_vertex().definition(&vs.entry_point).unwrap();
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
         // TODO: Dynamically input arbitrary number of shaders
         let stages = [
-            PipelineShaderStageCreateInfo::new(vs.entry_point.clone()),
-            PipelineShaderStageCreateInfo::new(fs.entry_point.clone()),
+            PipelineShaderStageCreateInfo::new(vs.clone()),
+            PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
         let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
@@ -448,7 +443,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             descriptor_sets.push(DescriptorSetWithOffsets::new(descriptor_set, []));
             shader.descriptor_set = Some(descriptor_sets[i].clone());
             i += 1;
-
         }
 
         let pipeline_layout = PipelineLayout::new(
