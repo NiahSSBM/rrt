@@ -61,7 +61,7 @@ use winit::window::Window;
 
 use crate::game::RenderEvent;
 use crate::mesh::{Mesh, MyVertex, combine_verticies};
-use crate::shader::{ShaderType, ShaderWithDescriptors, vs_default};
+use crate::shader::vs_default;
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -261,9 +261,11 @@ fn create_device(
         }],
         enabled_extensions: DeviceExtensions {
             khr_swapchain: true,
+            khr_fragment_shader_barycentric: true,
             ..Default::default()
         },
         enabled_features: DeviceFeatures {
+            fragment_shader_barycentric: true,
             ..Default::default()
         },
         ..Default::default()

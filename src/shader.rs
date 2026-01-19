@@ -4,10 +4,11 @@ use vulkano::{
     shader::{EntryPoint, spirv::ExecutionModel},
 };
 
-#[derive(Eq, Hash, PartialEq, Clone)]
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
 pub enum ShaderType {
     VertexDefault,
     VertexCustom,
+    VertexWireframe,
 
     FragmentDefault,
     FragmentCustom,
@@ -38,7 +39,7 @@ impl Shaders {
     pub fn insert_loaded(&mut self, pre_loaded_shaders: &Self, s_type: ShaderType) {
         self.loaded.insert(
             s_type.clone(),
-            pre_loaded_shaders.loaded.get(&s_type).cloned().unwrap(),
+            pre_loaded_shaders.loaded.get(&s_type).cloned().expect("Error: Shader not loaded!"),
         );
     }
 
@@ -82,6 +83,13 @@ impl Shaders {
                 },
                 ShaderType::VertexCustom => ShaderWithDescriptors {
                     entry_point: vs_custom::load(device)
+                        .unwrap()
+                        .entry_point("main")
+                        .unwrap(),
+                    descriptor_set: None,
+                },
+                ShaderType::VertexWireframe => ShaderWithDescriptors {
+                    entry_point: vs_wireframe::load(device)
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -145,5 +153,12 @@ pub mod fs_wireframe {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/frag_wireframe.glsl",
+    }
+}
+
+pub mod vs_wireframe {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        path: "shaders/vert_wireframe.glsl",
     }
 }

@@ -20,6 +20,7 @@ pub fn game_main(mut data: GameData) {
     // Initialize shaders
     data.available_shaders.load(ShaderType::VertexDefault, data.render_device.clone());
     data.available_shaders.load(ShaderType::VertexCustom, data.render_device.clone());
+    data.available_shaders.load(ShaderType::VertexWireframe, data.render_device.clone());
 
     data.available_shaders.load(ShaderType::FragmentDefault, data.render_device.clone());
     data.available_shaders.load(ShaderType::FragmentCustom, data.render_device.clone());
@@ -31,8 +32,8 @@ pub fn game_main(mut data: GameData) {
     first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
 
     let mut second_tri_shaders = Shaders::new();
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexCustom);
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentCustom);
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
+    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
 
     let mut meshes = vec![];
     let mesh = Mesh::new(
