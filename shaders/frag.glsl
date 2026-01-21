@@ -1,8 +1,12 @@
 #version 460
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in fInput {
+    vec3 in_position;
+    vec4 in_color;
+};
+
 layout(location = 0) out vec4 f_color;
 
 void main() {
-    f_color = vec4(cos(fragColor), 1.0);
+    f_color = in_color;
 }

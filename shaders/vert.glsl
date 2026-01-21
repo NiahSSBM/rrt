@@ -1,12 +1,14 @@
 #version 460
 
 layout(location = 0) in vec2 position;
-layout(location = 0) out vec3 fragColor;
-layout(binding = 0) buffer vColor {
-    vec3 colors[3];
-} vColors;
+layout(location = 1) in vec4 color;
+
+layout(location = 0) out vOutput {
+    vec3 out_position;
+    vec4 out_color;
+};
 
 void main() {
     gl_Position = vec4(position, 0.0, 1.0);
-    fragColor = vColors.colors[gl_VertexIndex % 3];
+    out_color = color;
 }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
+use color::AlphaColor;
 use vs_default::vColor;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -60,7 +61,7 @@ use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 use crate::game::RenderEvent;
-use crate::mesh::{Mesh, MyVertex, combine_verticies};
+use crate::mesh::{Mesh, Vertex2D, combine_verticies};
 use crate::shader::vs_default;
 
 #[derive(Default)]
@@ -75,7 +76,7 @@ pub struct WindowContext {
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
-    vertex_buffer: Option<Subbuffer<[MyVertex]>>,
+    vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     images: Option<Vec<Arc<Image>>>,
@@ -338,7 +339,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         println!("Warning: No meshes to load!");
     }
 
-    // If there are no shaders attached, the default ones are used instead
     let mut x = 0;
     for mesh in &mut window_context.meshes {
         let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
@@ -353,7 +353,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             .get_entry(ExecutionModel::Fragment)
             .expect("Error: No fragment shader found!");
 
-        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
+        let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
 
         // TODO: Dynamically input arbitrary number of shaders
         let stages = [
@@ -362,9 +362,12 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         ];
 
         let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
+        
+        // Binding 0
+        // This is for the vColor buffer on our vertex shader
         let binding = DescriptorSetLayoutBinding {
             descriptor_count: 1,
-            stages: ShaderStages::all_graphics(),
+            stages: ShaderStages::VERTEX,
             immutable_samplers: Vec::new(),
             ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
         };
@@ -781,7 +784,7 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
 
     // Buffer::from_iter will panic if there's no verticies, so we'll make one vertex if there isn't one
     if verticies.is_empty() {
-        verticies.push(MyVertex::new([0.0, 0.0]));
+        verticies.push(Vertex2D::new([0.0, 0.0], AlphaColor::WHITE));
     }
     let vertex_buffer = Buffer::from_iter(
         window_context
