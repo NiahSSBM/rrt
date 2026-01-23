@@ -1,7 +1,4 @@
-use color::{AlphaColor, Srgb};
-use vulkano::{buffer::BufferContents, pipeline::graphics::vertex_input::Vertex};
-
-use crate::shader::Shaders;
+use crate::shader::{Shaders, Vertex2D};
 
 #[derive(Clone)]
 pub struct Mesh {
@@ -10,30 +7,12 @@ pub struct Mesh {
     _id: u32, // unused
 }
 
-#[derive(BufferContents, Vertex, Clone)]
-#[repr(C)]
-pub struct Vertex2D {
-    #[format(R32G32_SFLOAT)]
-    pub position: [f32; 2],
-    #[format(R32G32B32A32_SFLOAT)]
-    pub color: [f32; 4],
-}
-
 impl Mesh {
     pub fn new(verts: Vec<Vertex2D>, shaders: Shaders) -> Self {
         Self {
             verticies: verts,
             shaders: shaders,
             _id: 0, // unused
-        }
-    }
-}
-
-impl Vertex2D {
-    pub fn new(position: [f32; 2], color: AlphaColor<Srgb>) -> Self {
-        Self {
-            position: position,
-            color: color.components
         }
     }
 }

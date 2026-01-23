@@ -6,6 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
 use color::AlphaColor;
+use nalgebra::Matrix4;
 use vs_default::vColor;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -61,8 +62,8 @@ use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 use crate::game::RenderEvent;
-use crate::mesh::{Mesh, Vertex2D, combine_verticies};
-use crate::shader::vs_default;
+use crate::mesh::{Mesh, combine_verticies};
+use crate::shader::{Vertex2D, vs_custom, vs_default};
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -339,7 +340,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         println!("Warning: No meshes to load!");
     }
 
-    let mut x = 0;
     for mesh in &mut window_context.meshes {
         let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
         let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
@@ -373,23 +373,18 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         };
 
         // Temp data for each descriptor set
-        let mut data = vs_default::vColor {
+        //let data = vs_custom::mats {
+        //    model: Matrix4::from_element(0.2).into(),
+        //    view: Matrix4::from_element(0.3).into(),
+        //    proj: Matrix4::from_element(0.5).into(),
+        //};
+        let data = vs_default::vColor {
             colors: [
-                [0.0, 1.0, 0.0].into(),
-                [1.0, 0.0, 0.0].into(),
-                [0.0, 1.0, 0.0].into(),
-            ],
+            [1.0, 0.0, 0.0].into(),
+            [0.0, 1.0, 0.0].into(),
+            [0.0, 0.0, 1.0].into(),
+            ]
         };
-        if x == 0 {
-            data = vs_default::vColor {
-                colors: [
-                    [0.0, 0.0, 1.0].into(),
-                    [0.0, 1.0, 0.0].into(),
-                    [0.0, 0.0, 1.0].into(),
-                ],
-            };
-        }
-        x += 1;
 
         // Set a binding and layout for each stage
         // Each stage gets its own descriptor set

@@ -1,9 +1,6 @@
 #version 460
 
-layout(location = 0) in fInput {
-    vec3 in_position;
-    vec4 in_color;
-};
+layout(location = 0) in vec4 in_color;
 
 layout(location = 0) out vec4 f_color;
 

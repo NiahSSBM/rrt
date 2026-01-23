@@ -4,9 +4,10 @@ use std::sync::mpsc;
 use color::AlphaColor;
 use color::palette::css;
 
-use crate::mesh::{Mesh, Vertex2D};
+use crate::mesh::Mesh;
 use crate::shader::ShaderType;
 use crate::shader::Shaders;
+use crate::shader::Vertex2D;
 
 pub enum RenderEvent {
     AddMesh(Mesh),
@@ -37,8 +38,8 @@ pub fn game_main(mut data: GameData) {
 
     // Only use needed shaders for each mesh
     let mut first_tri_shaders = Shaders::new();
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexCustom);
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentCustom);
+    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
+    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
 
     let mut second_tri_shaders = Shaders::new();
     second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
