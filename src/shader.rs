@@ -4,22 +4,19 @@ use std::{
     sync::Arc,
 };
 use vulkano::{
-    Validated, VulkanError,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{AutoCommandBufferBuilder, PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator},
-    descriptor_set::{
+    Validated, VulkanError, buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{
+        AutoCommandBufferBuilder, PrimaryCommandBufferAbstract,
+        allocator::StandardCommandBufferAllocator,
+    }, descriptor_set::{
         self, DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
         layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
         },
-    },
-    device::{Device, Queue},
-    memory::allocator::{
+    }, device::{Device, Queue}, memory::allocator::{
         AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
-    },
-    shader::{EntryPoint, ShaderStage, ShaderStages, spirv::ExecutionModel}, sync::GpuFuture,
+    }, pipeline::PipelineLayout, shader::{EntryPoint, ShaderStage, ShaderStages, spirv::ExecutionModel}, sync::GpuFuture
 };
 
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
@@ -163,15 +160,17 @@ impl Shaders {
     }
 }
 
-struct VGFXDescriptorSetLayout {
-    stage: ShaderStages,
-    descriptor_type: DescriptorType,
-    descriptor_count: u32,
+// TODO: This only needs to be pub for a temporary descriptor creation in vgfx.rs
+pub struct VGFXDescriptorSetLayout {
+    pub stage: ShaderStages,
+    pub descriptor_type: DescriptorType,
+    pub descriptor_count: u32,
 }
 
-struct VGFXDescriptorSetLayoutWithData<T> {
-    layout: Arc<DescriptorSetLayout>,
-    data: T,
+#[derive(Clone)]
+pub struct VGFXDescriptorSetLayoutWithData<T> {
+    pub layout: Arc<DescriptorSetLayout>,
+    pub data: T,
 }
 
 // To create a descriptor set layout we need:
@@ -182,18 +181,18 @@ struct VGFXDescriptorSetLayoutWithData<T> {
 //      The descriptor count is NOT the total number of descriptors. It's instead the number of elements within a single descriptor
 //      If the data is a single element, this should be 1. If the data is an array, this is the array length.
 // - The device the descriptor set is used for
-fn create_descriptor_set_layouts(
-    layout: Vec<VGFXDescriptorSetLayout>,
+pub fn create_descriptor_set_layout(
+    layouts: Vec<VGFXDescriptorSetLayout>,
     device: Arc<Device>,
 ) -> Result<Arc<DescriptorSetLayout>, Validated<VulkanError>> {
     // Enumerate all our bindings
     let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
-    for i in 0..layout.len() {
+    for i in 0..layouts.len() {
         let binding = DescriptorSetLayoutBinding {
-            descriptor_count: layout[i].descriptor_count,
-            stages: layout[i].stage,
+            descriptor_count: layouts[i].descriptor_count,
+            stages: layouts[i].stage,
             immutable_samplers: Vec::new(),
-            ..DescriptorSetLayoutBinding::descriptor_type(layout[i].descriptor_type)
+            ..DescriptorSetLayoutBinding::descriptor_type(layouts[i].descriptor_type)
         };
         bindings.insert(i as u32, binding);
     }
@@ -214,14 +213,18 @@ fn create_descriptor_set_layouts(
 // - The data to get sent to the GPU
 // - A few memory allocators
 // - A device queue
-fn push_descriptor_sets<T: Send + Sync + bytemuck::Pod>(
+pub fn push_descriptor_sets<T: Send + Sync + BufferContents>(
     sets: Vec<VGFXDescriptorSetLayoutWithData<T>>,
-    host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     queue: Arc<Queue>,
-) -> Vec<DescriptorSetWithOffsets> {
+) -> (Arc<PipelineLayout>, Vec<DescriptorSetWithOffsets>) {
+    // We might only need one of these
+    let host_buffer_allocator =
+        Arc::new(GenericMemoryAllocator::new_default(queue.device().clone()));
+    let device_buffer_allocator =
+        Arc::new(GenericMemoryAllocator::new_default(queue.device().clone()));
+
     let mut host_buffers: Vec<Subbuffer<T>> = Vec::new();
     let mut device_buffers: Vec<Subbuffer<T>> = Vec::new();
     let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
@@ -261,7 +264,7 @@ fn push_descriptor_sets<T: Send + Sync + bytemuck::Pod>(
 
         // Define our descriptor set
         // This is binds our descriptor layout to the region in device memory the data will end up
-        // (I think) 
+        // (I think)
         let descriptor_set = DescriptorSet::new_variable(
             descriptor_set_allocator.clone(),
             set.layout.clone(),
@@ -318,7 +321,7 @@ fn push_descriptor_sets<T: Send + Sync + bytemuck::Pod>(
         .wait(None)
         .unwrap();
 
-    descriptor_sets
+    (pipeline_layout, descriptor_sets)
 }
 
 pub mod vs_default {

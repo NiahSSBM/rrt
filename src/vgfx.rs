@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, TryReserveError};
 
 use std::sync::Arc;
 
+use color::AlphaColor;
+use nalgebra::Matrix4;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
-use color::AlphaColor;
-use nalgebra::Matrix4;
 use vs_default::vColor;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -49,7 +49,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::ShaderStages;
+use vulkano::shader::{self, ShaderStages};
 use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -63,7 +63,10 @@ use winit::window::Window;
 
 use crate::game::RenderEvent;
 use crate::mesh::{Mesh, combine_verticies};
-use crate::shader::{Vertex2D, vs_custom, vs_default};
+use crate::shader::{
+    VGFXDescriptorSetLayout, VGFXDescriptorSetLayoutWithData, Vertex2D,
+    create_descriptor_set_layout, push_descriptor_sets, vs_custom, vs_default,
+};
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -73,7 +76,6 @@ pub struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
@@ -322,11 +324,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     let mut device_buffers: Vec<Subbuffer<vColor>> = Vec::new();
 
     // Create some allocators if we don't already have them
-    if window_context.host_buffer_allocator.is_none() {
-        window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
-            device.clone(),
-        )));
-    }
+    let host_buffer_allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
     if window_context.descriptor_set_allocator.is_none() {
         window_context.descriptor_set_allocator =
             Some(Arc::new(StandardDescriptorSetAllocator::new(
@@ -362,7 +360,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         ];
 
         let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
-        
+
         // Binding 0
         // This is for the vColor buffer on our vertex shader
         let binding = DescriptorSetLayoutBinding {
@@ -380,16 +378,44 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         //};
         let data = vs_default::vColor {
             colors: [
-            [1.0, 0.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            [0.0, 0.0, 1.0].into(),
-            ]
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 1.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ],
         };
 
+        // Super temporary setup because I want to go to bed
+        // Something in here is super slow
+        let mut layouts: Vec<VGFXDescriptorSetLayout> = Vec::new();
+        for _ in 0..stages.len() {
+            layouts.push(VGFXDescriptorSetLayout {
+                stage: ShaderStages::all_graphics(),
+                descriptor_type: DescriptorType::StorageBuffer,
+                descriptor_count: 1,
+            });
+        }
+
+        let descriptor_set_layout = create_descriptor_set_layout(layouts, device.clone()).unwrap();
+        let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+            layout: descriptor_set_layout,
+            data: data,
+        };
+        let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+            vec![descriptor_layout_with_data.clone(), descriptor_layout_with_data],
+            window_context.command_buffer_allocator.clone().unwrap(),
+            window_context.descriptor_set_allocator.clone().unwrap(),
+            window_context.queues.clone().unwrap()[0].clone(),
+        );
+        for (i, shader) in mesh.shaders.loaded.values_mut().enumerate() {
+            shader.descriptor_set = Some(descriptor_sets[i].clone());
+        } 
+
+        /*
         // Set a binding and layout for each stage
         // Each stage gets its own descriptor set
         let mut i = 0;
         for shader in mesh.shaders.loaded.values_mut() {
+
             // TODO: Do bindings need to be inserted like this?
             bindings.insert(i as u32, binding.clone());
 
@@ -404,7 +430,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             // Copy our descriptor data into a buffer located in host memory
             // This will get copied over to device memory later
             let host_buffer = Buffer::from_data(
-                window_context.host_buffer_allocator.clone().unwrap(),
+                host_buffer_allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::TRANSFER_SRC,
                     ..Default::default()
@@ -420,7 +446,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
             // Create a target memory buffer on the device to copy our descriptor set to
             let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
-                window_context.host_buffer_allocator.clone().unwrap(),
+                host_buffer_allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
                     ..Default::default()
@@ -493,7 +519,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             .then_signal_fence_and_flush()
             .unwrap()
             .wait(None)
-            .unwrap();
+            .unwrap();*/
 
         let subpass =
             Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
