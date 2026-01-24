@@ -4,19 +4,27 @@ use std::{
     sync::Arc,
 };
 use vulkano::{
-    Validated, VulkanError, buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{
+    Validated, VulkanError,
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
+    command_buffer::{
         AutoCommandBufferBuilder, PrimaryCommandBufferAbstract,
         allocator::StandardCommandBufferAllocator,
-    }, descriptor_set::{
-        self, DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
+    },
+    descriptor_set::{
+         DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
         layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
         },
-    }, device::{Device, Queue}, memory::allocator::{
+    },
+    device::{Device, Queue},
+    memory::allocator::{
         AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
-    }, pipeline::PipelineLayout, shader::{EntryPoint, ShaderStage, ShaderStages, spirv::ExecutionModel}, sync::GpuFuture
+    },
+    pipeline::PipelineLayout,
+    shader::{EntryPoint, ShaderStages, spirv::ExecutionModel},
+    sync::GpuFuture,
 };
 
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
@@ -215,16 +223,12 @@ pub fn create_descriptor_set_layout(
 // - A device queue
 pub fn push_descriptor_sets<T: Send + Sync + BufferContents>(
     sets: Vec<VGFXDescriptorSetLayoutWithData<T>>,
+    host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     queue: Arc<Queue>,
 ) -> (Arc<PipelineLayout>, Vec<DescriptorSetWithOffsets>) {
-    // We might only need one of these
-    let host_buffer_allocator =
-        Arc::new(GenericMemoryAllocator::new_default(queue.device().clone()));
-    let device_buffer_allocator =
-        Arc::new(GenericMemoryAllocator::new_default(queue.device().clone()));
-
     let mut host_buffers: Vec<Subbuffer<T>> = Vec::new();
     let mut device_buffers: Vec<Subbuffer<T>> = Vec::new();
     let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();

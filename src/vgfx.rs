@@ -1,26 +1,21 @@
-use std::collections::{BTreeMap, TryReserveError};
+use std::collections::TryReserveError;
 
 use std::sync::Arc;
 
 use color::AlphaColor;
-use nalgebra::Matrix4;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
-use vs_default::vColor;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
-    PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+    SubpassBeginInfo, SubpassContents,
 };
 use vulkano::descriptor_set::allocator::{
     StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo,
 };
-use vulkano::descriptor_set::layout::{
-    DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
-};
-use vulkano::descriptor_set::{DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet};
+use vulkano::descriptor_set::layout::DescriptorType;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateFlags,
@@ -44,12 +39,11 @@ use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::layout::{PipelineLayoutCreateFlags, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{
-    GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
+    GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::{self, ShaderStages};
+use vulkano::shader::ShaderStages;
 use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -65,7 +59,7 @@ use crate::game::RenderEvent;
 use crate::mesh::{Mesh, combine_verticies};
 use crate::shader::{
     VGFXDescriptorSetLayout, VGFXDescriptorSetLayoutWithData, Vertex2D,
-    create_descriptor_set_layout, push_descriptor_sets, vs_custom, vs_default,
+    create_descriptor_set_layout, push_descriptor_sets, vs_default,
 };
 
 #[derive(Default)]
@@ -77,6 +71,8 @@ pub struct WindowContext {
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
+    host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    device_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
@@ -144,7 +140,6 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
 
 pub fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
-    println!("Resizing window");
     window_context.pipelines = create_pipelines(window_context);
     if window_context.pipelines.is_empty() {
         println!(
@@ -320,11 +315,8 @@ fn create_swapchain(
 fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipeline>> {
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
-    let mut host_buffers: Vec<Subbuffer<vColor>> = Vec::new();
-    let mut device_buffers: Vec<Subbuffer<vColor>> = Vec::new();
 
-    // Create some allocators if we don't already have them
-    let host_buffer_allocator = Arc::new(GenericMemoryAllocator::new_default(device.clone()));
+    // Create some allocators if needed
     if window_context.descriptor_set_allocator.is_none() {
         window_context.descriptor_set_allocator =
             Some(Arc::new(StandardDescriptorSetAllocator::new(
@@ -333,15 +325,26 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             )));
     }
 
+    // Unlike other types of allocators, these allocators do not specifically mention performance implications in the vulkano docs
+    // But I found they are still quite slow to create on the fly
+    // For now they are stored for re-use, and re-created where needed if they are ever freed for whatever reason
+    if window_context.host_buffer_allocator.is_none() {
+        window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
+            device.clone(),
+        )));
+    }
+    if window_context.device_buffer_allocator.is_none() {
+        window_context.device_buffer_allocator = Some(Arc::new(
+            GenericMemoryAllocator::new_default(device.clone()),
+        ));
+    }
+
     if window_context.meshes.is_empty() {
         // Not fatal, a default mesh with 1 vertex is created later in this case
         println!("Warning: No meshes to load!");
     }
 
     for mesh in &mut window_context.meshes {
-        let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
-        let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
-
         let vs = mesh
             .shaders
             .get_entry(ExecutionModel::Vertex)
@@ -359,17 +362,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
-        let mut bindings: BTreeMap<u32, DescriptorSetLayoutBinding> = BTreeMap::new();
-
-        // Binding 0
-        // This is for the vColor buffer on our vertex shader
-        let binding = DescriptorSetLayoutBinding {
-            descriptor_count: 1,
-            stages: ShaderStages::VERTEX,
-            immutable_samplers: Vec::new(),
-            ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
-        };
-
         // Temp data for each descriptor set
         //let data = vs_custom::mats {
         //    model: Matrix4::from_element(0.2).into(),
@@ -385,7 +377,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         };
 
         // Super temporary setup because I want to go to bed
-        // Something in here is super slow
         let mut layouts: Vec<VGFXDescriptorSetLayout> = Vec::new();
         for _ in 0..stages.len() {
             layouts.push(VGFXDescriptorSetLayout {
@@ -401,125 +392,19 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             data: data,
         };
         let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
-            vec![descriptor_layout_with_data.clone(), descriptor_layout_with_data],
+            vec![
+                descriptor_layout_with_data.clone(),
+                descriptor_layout_with_data,
+            ],
+            window_context.host_buffer_allocator.clone().unwrap(),
+            window_context.device_buffer_allocator.clone().unwrap(),
             window_context.command_buffer_allocator.clone().unwrap(),
             window_context.descriptor_set_allocator.clone().unwrap(),
             window_context.queues.clone().unwrap()[0].clone(),
         );
         for (i, shader) in mesh.shaders.loaded.values_mut().enumerate() {
             shader.descriptor_set = Some(descriptor_sets[i].clone());
-        } 
-
-        /*
-        // Set a binding and layout for each stage
-        // Each stage gets its own descriptor set
-        let mut i = 0;
-        for shader in mesh.shaders.loaded.values_mut() {
-
-            // TODO: Do bindings need to be inserted like this?
-            bindings.insert(i as u32, binding.clone());
-
-            let create_info = DescriptorSetLayoutCreateInfo {
-                flags: Default::default(),
-                bindings: bindings.clone(),
-                ..Default::default()
-            };
-            let layout = DescriptorSetLayout::new(device.clone(), create_info).unwrap();
-            descriptor_set_layouts.push(layout.clone());
-
-            // Copy our descriptor data into a buffer located in host memory
-            // This will get copied over to device memory later
-            let host_buffer = Buffer::from_data(
-                host_buffer_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                data,
-            )
-            .unwrap();
-
-            // Create a target memory buffer on the device to copy our descriptor set to
-            let device_buffer: Subbuffer<vColor> = Buffer::new_sized(
-                host_buffer_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-            host_buffers.push(host_buffer.clone());
-            device_buffers.push(device_buffer.clone());
-
-            // Here we specify the allocated device memory is for a descriptor set with our layout
-            let descriptor_set = DescriptorSet::new_variable(
-                window_context.descriptor_set_allocator.clone().unwrap(),
-                layout.clone(),
-                layout.variable_descriptor_count(),
-                vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
-                vec![],
-            )
-            .unwrap();
-
-            // This vector holds the descriptor set for each pipeline stage
-            descriptor_sets.push(DescriptorSetWithOffsets::new(descriptor_set, []));
-            shader.descriptor_set = Some(descriptor_sets[i].clone());
-            i += 1;
         }
-
-        let pipeline_layout = PipelineLayout::new(
-            device.clone(),
-            PipelineLayoutCreateInfo {
-                flags: PipelineLayoutCreateFlags::default(),
-                set_layouts: descriptor_set_layouts,
-                push_constant_ranges: Vec::new(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        // Setup a one-time command buffer to send our host buffer to the device buffer
-        let mut cbb = AutoCommandBufferBuilder::primary(
-            window_context
-                .command_buffer_allocator
-                .as_ref()
-                .unwrap()
-                .clone(),
-            window_context.queues.as_ref().unwrap()[0].queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-        for i in 0..host_buffers.len() {
-            cbb.copy_buffer(CopyBufferInfo::buffers(
-                host_buffers[i].clone(),
-                device_buffers[i].clone(),
-            ))
-            .unwrap();
-        }
-        cbb.bind_descriptor_sets(
-            PipelineBindPoint::Graphics,
-            pipeline_layout.clone(),
-            0,
-            descriptor_sets,
-        )
-        .unwrap();
-        let cb = cbb.build().unwrap();
-        cb.execute(window_context.queues.as_ref().unwrap()[0].clone())
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
-            .unwrap();*/
 
         let subpass =
             Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
