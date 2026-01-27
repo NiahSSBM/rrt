@@ -12,10 +12,6 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents,
 };
-use vulkano::descriptor_set::allocator::{
-    StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo,
-};
-use vulkano::descriptor_set::layout::DescriptorType;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateFlags,
@@ -43,7 +39,6 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::ShaderStages;
 use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -57,10 +52,7 @@ use winit::window::Window;
 
 use crate::game::RenderEvent;
 use crate::mesh::{Mesh, combine_verticies};
-use crate::shader::{
-    VGFXDescriptorSetLayout, VGFXDescriptorSetLayoutWithData, Vertex2D,
-    create_descriptor_set_layout, push_descriptor_sets, vs_default,
-};
+use crate::shader::Vertex2D;
 
 #[derive(Default)]
 pub struct WindowContext {
@@ -70,9 +62,6 @@ pub struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    //descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
-    //host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    //device_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
@@ -316,29 +305,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     let device = window_context.device.as_ref().unwrap();
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
-    // Create some allocators if needed
-    //if window_context.descriptor_set_allocator.is_none() {
-    //    window_context.descriptor_set_allocator =
-    //        Some(Arc::new(StandardDescriptorSetAllocator::new(
-    //            device.clone(),
-    //            StandardDescriptorSetAllocatorCreateInfo::default(),
-    //        )));
-    //}
-
-    // Unlike other types of allocators, these allocators do not specifically mention performance implications in the vulkano docs
-    // But I found they are still quite slow to create on the fly
-    // For now they are stored for re-use, and re-created where needed if they are ever freed for whatever reason
-    //if window_context.host_buffer_allocator.is_none() {
-    //    window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
-    //        device.clone(),
-    //    )));
-    //}
-    //if window_context.device_buffer_allocator.is_none() {
-    //    window_context.device_buffer_allocator = Some(Arc::new(
-    //        GenericMemoryAllocator::new_default(device.clone()),
-    //    ));
-    //}
-
     if window_context.meshes.is_empty() {
         // Not fatal, a default mesh with 1 vertex is created later in this case
         println!("Warning: No meshes to load!");
@@ -362,52 +328,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
-        /*
-        // Temp data for each descriptor set
-        //let data = vs_custom::mats {
-        //    model: Matrix4::from_element(0.2).into(),
-        //    view: Matrix4::from_element(0.3).into(),
-        //    proj: Matrix4::from_element(0.5).into(),
-        //};
-        let data = vs_default::vColor {
-            colors: [
-                [1.0, 0.0, 0.0].into(),
-                [0.0, 1.0, 0.0].into(),
-                [0.0, 0.0, 1.0].into(),
-            ],
-        };
-
-        // Super temporary setup because I want to go to bed
-        let mut layouts: Vec<VGFXDescriptorSetLayout> = Vec::new();
-        for _ in 0..stages.len() {
-            layouts.push(VGFXDescriptorSetLayout {
-                stage: ShaderStages::all_graphics(),
-                descriptor_type: DescriptorType::StorageBuffer,
-                descriptor_count: 1,
-            });
-        }
-
-        let descriptor_set_layout = create_descriptor_set_layout(layouts, device.clone()).unwrap();
-        let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
-            layout: descriptor_set_layout,
-            data: data,
-        };
-        let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
-            vec![
-                descriptor_layout_with_data.clone(),
-                descriptor_layout_with_data,
-            ],
-            window_context.host_buffer_allocator.clone().unwrap(),
-            window_context.device_buffer_allocator.clone().unwrap(),
-            window_context.command_buffer_allocator.clone().unwrap(),
-            window_context.descriptor_set_allocator.clone().unwrap(),
-            window_context.queues.clone().unwrap()[0].clone(),
-        );
-        for (i, shader) in mesh.shaders.loaded.values_mut().enumerate() {
-            shader.descriptor_set = Some(descriptor_sets[i].clone());
-        }
-        */
-
         let subpass =
             Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
 
@@ -429,6 +349,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                     ColorBlendAttachmentState::default(),
                 )),
                 subpass: Some(subpass.into()),
+                // Our pipeline is pre-computed and is attached to our shader on our mesh
                 ..GraphicsPipelineCreateInfo::layout(mesh.shaders.get_pipelines()[0].clone())
             },
         )

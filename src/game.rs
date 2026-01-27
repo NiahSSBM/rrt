@@ -24,18 +24,18 @@ pub struct GameData {
 pub fn game_main(mut data: GameData) {
     // Initialize shaders
     data.available_shaders
-        .load(ShaderType::VertexDefault, data.render_queue.clone());
+        .load(ShaderType::VertexDefault);
     data.available_shaders
-        .load(ShaderType::VertexCustom, data.render_queue.clone());
+        .load(ShaderType::VertexCustom);
     data.available_shaders
-        .load(ShaderType::VertexWireframe, data.render_queue.clone());
+        .load(ShaderType::VertexWireframe);
 
     data.available_shaders
-        .load(ShaderType::FragmentDefault, data.render_queue.clone());
+        .load(ShaderType::FragmentDefault);
     data.available_shaders
-        .load(ShaderType::FragmentCustom, data.render_queue.clone());
+        .load(ShaderType::FragmentCustom);
     data.available_shaders
-        .load(ShaderType::FragmentWireframe, data.render_queue.clone());
+        .load(ShaderType::FragmentWireframe);
 
     // Only use needed shaders for each mesh
     let mut first_tri_shaders = Shaders::new(data.render_queue.clone());
