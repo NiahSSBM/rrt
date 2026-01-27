@@ -70,10 +70,10 @@ pub struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
-    host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    device_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    queues: Option<Vec<Arc<Queue>>>,
+    //descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
+    //host_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    //device_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
@@ -317,27 +317,27 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
     // Create some allocators if needed
-    if window_context.descriptor_set_allocator.is_none() {
-        window_context.descriptor_set_allocator =
-            Some(Arc::new(StandardDescriptorSetAllocator::new(
-                device.clone(),
-                StandardDescriptorSetAllocatorCreateInfo::default(),
-            )));
-    }
+    //if window_context.descriptor_set_allocator.is_none() {
+    //    window_context.descriptor_set_allocator =
+    //        Some(Arc::new(StandardDescriptorSetAllocator::new(
+    //            device.clone(),
+    //            StandardDescriptorSetAllocatorCreateInfo::default(),
+    //        )));
+    //}
 
     // Unlike other types of allocators, these allocators do not specifically mention performance implications in the vulkano docs
     // But I found they are still quite slow to create on the fly
     // For now they are stored for re-use, and re-created where needed if they are ever freed for whatever reason
-    if window_context.host_buffer_allocator.is_none() {
-        window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
-            device.clone(),
-        )));
-    }
-    if window_context.device_buffer_allocator.is_none() {
-        window_context.device_buffer_allocator = Some(Arc::new(
-            GenericMemoryAllocator::new_default(device.clone()),
-        ));
-    }
+    //if window_context.host_buffer_allocator.is_none() {
+    //    window_context.host_buffer_allocator = Some(Arc::new(GenericMemoryAllocator::new_default(
+    //        device.clone(),
+    //    )));
+    //}
+    //if window_context.device_buffer_allocator.is_none() {
+    //    window_context.device_buffer_allocator = Some(Arc::new(
+    //        GenericMemoryAllocator::new_default(device.clone()),
+    //    ));
+    //}
 
     if window_context.meshes.is_empty() {
         // Not fatal, a default mesh with 1 vertex is created later in this case
@@ -362,6 +362,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
+        /*
         // Temp data for each descriptor set
         //let data = vs_custom::mats {
         //    model: Matrix4::from_element(0.2).into(),
@@ -405,6 +406,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         for (i, shader) in mesh.shaders.loaded.values_mut().enumerate() {
             shader.descriptor_set = Some(descriptor_sets[i].clone());
         }
+        */
 
         let subpass =
             Subpass::from(window_context.render_pass.as_ref().unwrap().clone(), 0).unwrap();
@@ -427,7 +429,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                     ColorBlendAttachmentState::default(),
                 )),
                 subpass: Some(subpass.into()),
-                ..GraphicsPipelineCreateInfo::layout(pipeline_layout)
+                ..GraphicsPipelineCreateInfo::layout(mesh.shaders.get_pipelines()[0].clone())
             },
         )
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));

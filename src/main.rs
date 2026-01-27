@@ -47,8 +47,8 @@ impl ApplicationHandler for App {
             let (to_render, from_game) = mpsc::channel();
             let game_data = GameData {
                 to_render,
-                render_device: self.window_contexts[i].device.clone().unwrap(),
-                available_shaders: Shaders::new(),
+                render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
+                available_shaders: Shaders::new(self.window_contexts[i].queues.clone().unwrap()[0].clone()),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             thread::spawn(|| {

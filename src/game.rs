@@ -3,6 +3,7 @@ use std::sync::mpsc;
 
 use color::AlphaColor;
 use color::palette::css;
+use vulkano::device::Queue;
 
 use crate::mesh::Mesh;
 use crate::shader::ShaderType;
@@ -16,32 +17,32 @@ pub enum RenderEvent {
 
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
-    pub render_device: Arc<vulkano::device::Device>,
+    pub render_queue: Arc<Queue>,
     pub available_shaders: Shaders,
 }
 
 pub fn game_main(mut data: GameData) {
     // Initialize shaders
     data.available_shaders
-        .load(ShaderType::VertexDefault, data.render_device.clone());
+        .load(ShaderType::VertexDefault, data.render_queue.clone());
     data.available_shaders
-        .load(ShaderType::VertexCustom, data.render_device.clone());
+        .load(ShaderType::VertexCustom, data.render_queue.clone());
     data.available_shaders
-        .load(ShaderType::VertexWireframe, data.render_device.clone());
+        .load(ShaderType::VertexWireframe, data.render_queue.clone());
 
     data.available_shaders
-        .load(ShaderType::FragmentDefault, data.render_device.clone());
+        .load(ShaderType::FragmentDefault, data.render_queue.clone());
     data.available_shaders
-        .load(ShaderType::FragmentCustom, data.render_device.clone());
+        .load(ShaderType::FragmentCustom, data.render_queue.clone());
     data.available_shaders
-        .load(ShaderType::FragmentWireframe, data.render_device.clone());
+        .load(ShaderType::FragmentWireframe, data.render_queue.clone());
 
     // Only use needed shaders for each mesh
-    let mut first_tri_shaders = Shaders::new();
+    let mut first_tri_shaders = Shaders::new(data.render_queue.clone());
     first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
     first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
 
-    let mut second_tri_shaders = Shaders::new();
+    let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
     second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
     second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
 

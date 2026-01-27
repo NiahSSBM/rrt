@@ -11,7 +11,7 @@ use vulkano::{
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
-         DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
+        DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
         layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
@@ -26,6 +26,8 @@ use vulkano::{
     shader::{EntryPoint, ShaderStages, spirv::ExecutionModel},
     sync::GpuFuture,
 };
+
+use crate::shader::vs_default::vColor;
 
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 pub enum ShaderType {
@@ -62,18 +64,33 @@ impl Vertex2D {
 pub struct ShaderWithDescriptors {
     pub entry_point: EntryPoint,
     // Temporary Option until I can easily create descriptor sets
-    pub descriptor_set: Option<DescriptorSetWithOffsets>,
+    pub descriptor_set: DescriptorSetWithOffsets,
+    pub pipeline_layout: Arc<PipelineLayout>,
 }
 
 #[derive(Clone)]
 pub struct Shaders {
     pub loaded: HashMap<ShaderType, ShaderWithDescriptors>,
+    host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
 impl Shaders {
-    pub fn new() -> Self {
+    pub fn new(queue: Arc<Queue>) -> Self {
         Self {
             loaded: HashMap::new(),
+            host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(queue.device().clone())),
+            device_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(queue.device().clone())),
+            descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(
+                queue.device().clone(),
+                Default::default(),
+            )),
+            command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
+                queue.device().clone(),
+                Default::default(),
+            )),
         }
     }
 
@@ -90,10 +107,19 @@ impl Shaders {
         );
     }
 
+    // Returns descriptor sets for all loaded shaders
     pub fn get_descriptor_sets(&self) -> Vec<DescriptorSetWithOffsets> {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
-            out.push(shader.descriptor_set.clone().unwrap());
+            out.push(shader.descriptor_set.clone());
+        }
+        out
+    }
+    // Returns pipelines for all loaded shaders
+    pub fn get_pipelines(&self) -> Vec<Arc<PipelineLayout>> {
+        let mut out = Vec::new();
+        for shader in self.loaded.values() {
+            out.push(shader.pipeline_layout.clone());
         }
         out
     }
@@ -117,52 +143,251 @@ impl Shaders {
     }
 
     // TODO: Return an actual error when a shader isn't found
-    pub fn load(&mut self, s_type: ShaderType, device: Arc<vulkano::device::Device>) {
+    // Also this is complete spaghetti
+    pub fn load(&mut self, s_type: ShaderType, queue: Arc<Queue>) {
         self.loaded.insert(
             s_type.clone(),
             match s_type {
-                ShaderType::VertexDefault => ShaderWithDescriptors {
-                    entry_point: vs_default::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
+                ShaderType::VertexDefault => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: vs_default::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
+                }
+                ShaderType::VertexCustom => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: vs_custom::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
                 },
-                ShaderType::VertexCustom => ShaderWithDescriptors {
-                    entry_point: vs_custom::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
+                ShaderType::VertexWireframe => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: vs_wireframe::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
                 },
-                ShaderType::VertexWireframe => ShaderWithDescriptors {
-                    entry_point: vs_wireframe::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
+                ShaderType::FragmentDefault => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: fs_default::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
                 },
-                ShaderType::FragmentDefault => ShaderWithDescriptors {
-                    entry_point: fs_default::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
+                ShaderType::FragmentWireframe => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: fs_wireframe::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
                 },
-                ShaderType::FragmentWireframe => ShaderWithDescriptors {
-                    entry_point: fs_wireframe::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
-                },
-                ShaderType::FragmentCustom => ShaderWithDescriptors {
-                    entry_point: fs_custom::load(device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    descriptor_set: None,
-                },
+                ShaderType::FragmentCustom => {
+                    let descriptor_set_layout = create_descriptor_set_layout(
+                        vec![VGFXDescriptorSetLayout {
+                            stage: ShaderStages::VERTEX,
+                            descriptor_type: DescriptorType::StorageBuffer,
+                            descriptor_count: 1,
+                        }],
+                        queue.device().clone(),
+                    )
+                    .unwrap();
+                    let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+                        layout: descriptor_set_layout,
+                        data: vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0].into(),
+                                [0.0, 1.0, 0.0].into(),
+                                [0.0, 0.0, 1.0].into(),
+                            ],
+                        },
+                    };
+                    let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
+                        vec![
+                            descriptor_layout_with_data.clone(),
+                            descriptor_layout_with_data,
+                        ],
+                        self.host_buffer_allocator.clone(),
+                        self.device_buffer_allocator.clone(),
+                        self.command_buffer_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        queue.clone()
+                    );
+                    ShaderWithDescriptors {
+                        entry_point: fs_custom::load(queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        descriptor_set: descriptor_sets[0].clone(),
+                        pipeline_layout: pipeline_layout,
+                    }
+                }
             },
         );
     }
@@ -176,7 +401,7 @@ pub struct VGFXDescriptorSetLayout {
 }
 
 #[derive(Clone)]
-pub struct VGFXDescriptorSetLayoutWithData<T> {
+pub struct VGFXDescriptorSetLayoutWithData<T: BufferContents> {
     pub layout: Arc<DescriptorSetLayout>,
     pub data: T,
 }
