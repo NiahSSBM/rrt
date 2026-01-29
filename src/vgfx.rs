@@ -3,6 +3,7 @@ use std::collections::TryReserveError;
 use std::sync::Arc;
 
 use color::AlphaColor;
+use winit::platform::wayland::EventLoopExtWayland;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
@@ -54,6 +55,20 @@ use crate::game::RenderEvent;
 use crate::mesh::{Mesh, combine_verticies};
 use crate::shader::Vertex2D;
 
+#[derive(Default, PartialEq)]
+pub enum Platform {
+    //ANDROID,
+    //IOS,
+    //MACOS,
+    //ORBITAL,
+    WAYLAND,
+    //WEB,
+    //WINDOWS,
+    X11,
+    #[default]
+    UNKNOWN,
+}
+
 #[derive(Default)]
 pub struct WindowContext {
     pub window: Option<Arc<Window>>,
@@ -67,6 +82,7 @@ pub struct WindowContext {
     vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
+    surface: Option<Arc<Surface>>,
     images: Option<Vec<Arc<Image>>>,
     render_pass: Option<Arc<RenderPass>>,
     meshes: Vec<Mesh>,
@@ -77,6 +93,7 @@ pub struct WindowContext {
     pub recreate_swapchain: bool,
     viewport: Viewport,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
+    pub platform: Platform,
 }
 
 impl WindowContext {
@@ -96,8 +113,14 @@ impl WindowContext {
         )
         .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
 
+        let platform = match event_loop.is_wayland() {
+            true => Platform::WAYLAND,
+            false => Platform::X11,
+        };
+
         Self {
             vulkan_instance: Some(vulkan_instance.clone()),
+            platform: platform,
             ..Default::default()
         }
     }
@@ -110,21 +133,37 @@ impl WindowContext {
     }
 }
 
+// A swapchain gets recreated when the window is resized, the previous swapchain image reported as suboptimal, 
+// or fetching the current swapchain image failed for whatever reason
 pub fn recreate_swapchain(window_context: &mut WindowContext) {
+    // Make sure we have a compatible image format and colorspace for the new swapchain and framebuffer before creating them
+    let (format, colorspace) = get_format_and_colorspace(
+        window_context.device.clone().unwrap(),
+        window_context.surface.clone().unwrap(),
+    );
+
+    // Recreate our swapchain using the previous one, only changing the size, colorspace, and image format if applicable
     let (new_swapchain, new_images) = window_context
         .swapchain
         .as_ref()
         .unwrap()
         .recreate(SwapchainCreateInfo {
             image_extent: window_context.window.as_ref().unwrap().inner_size().into(),
+            image_color_space: colorspace,
+            image_format: format,
             ..window_context.swapchain.as_ref().unwrap().create_info()
         })
         .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
 
+    let new_framebuffers = create_frame_buffer(
+        window_context.render_pass.clone().unwrap(),
+        &new_images,
+        format,
+    );
+
     window_context.swapchain = Some(new_swapchain);
-    let new_framebuffers =
-        create_frame_buffer(window_context.render_pass.clone().unwrap(), new_images);
     window_context.framebuffer = Some(new_framebuffers);
+    window_context.images = Some(new_images);
 }
 
 pub fn resize_window(window_context: &mut WindowContext) {
@@ -135,6 +174,7 @@ pub fn resize_window(window_context: &mut WindowContext) {
             "Warning: No pipelines were created when resizing window! Are there any meshes to draw?"
         );
     }
+
     let new_command_buffers = create_command_buffers(window_context);
     window_context.command_buffers = Some(new_command_buffers);
 }
@@ -149,10 +189,21 @@ pub fn redraw(window_context: &mut WindowContext) {
     let (image_i, suboptimal, acquire_future) =
         match swapchain::acquire_next_image(swapchain.clone(), None).map_err(Validated::unwrap) {
             Ok(r) => r,
-            Err(err) => panic!("Failed to acquire next image: {err}"),
+            Err(err) => {
+                // Should be non-fatal
+                // We just don't draw using this swapchain, and it will get regenerated next frame
+                println!("WARNING: Failed to acquire next swapchain image: {}", err);
+
+                // In testing, this branch only happens when resizing the window when using X11
+                // Where the swapchain would get regenerated because it's being resized
+                // Here we force a swapchain recreation too, which might be unnecessary, but it's safe
+                window_context.recreate_swapchain = true;
+                return;
+            }
         };
 
     if suboptimal {
+        println!("Suboptimal detected");
         window_context.recreate_swapchain = true;
     }
 
@@ -261,6 +312,30 @@ fn create_device(
     return Device::new(physical_device, device_create_info);
 }
 
+// This gets a compatible image format and colorspace for the given surface
+// We're not always guaranteed to use our prefered format and colorspace, and it can change mid run
+// When we re-create swapchains, this is called to make sure our new swapchain is using compatible parameters
+fn get_format_and_colorspace(device: Arc<Device>, surface: Arc<Surface>) -> (Format, ColorSpace) {
+    // Query supported surface formats
+    let formats = match device
+        .physical_device()
+        .surface_formats(&surface, Default::default())
+    {
+        Ok(f) => f,
+        Err(e) => {
+            panic!("Failed to query surface formats: {:?}", e);
+        }
+    };
+
+    // Prefer B8G8R8A8_SRGB and SrgbNonLinear if available
+    // Otherwise just pick the first one
+    formats
+        .iter()
+        .find(|(fmt, cs)| *fmt == Format::B8G8R8A8_SRGB && *cs == ColorSpace::SrgbNonLinear)
+        .cloned()
+        .unwrap_or_else(|| formats[0])
+}
+
 fn create_swapchain(
     device: Arc<Device>,
     surface: Arc<Surface>,
@@ -272,12 +347,14 @@ fn create_swapchain(
     ),
     Validated<VulkanError>,
 > {
+    let (format, colorspace) = get_format_and_colorspace(device.clone(), surface.clone());
+
     let swapchain_create_info = SwapchainCreateInfo {
         flags: Default::default(),
         min_image_count: capabilities.min_image_count,
-        image_format: Format::R8G8B8A8_SRGB,
+        image_format: format,
         image_view_formats: Default::default(),
-        image_color_space: ColorSpace::SrgbNonLinear,
+        image_color_space: colorspace,
         //TODO: image_extent should be the same size as the window
         image_extent: [800, 600],
         image_array_layers: 1,
@@ -294,7 +371,8 @@ fn create_swapchain(
         win32_monitor: Default::default(),
         ..Default::default()
     };
-    return Swapchain::new(device, surface, swapchain_create_info);
+
+    Swapchain::new(device, surface, swapchain_create_info)
 }
 
 // TODO:
@@ -462,7 +540,8 @@ fn create_render_pass(
 
 fn create_frame_buffer(
     render_pass: Arc<RenderPass>,
-    images: Vec<Arc<Image>>,
+    images: &Vec<Arc<Image>>,
+    format: Format,
 ) -> Vec<Arc<Framebuffer>> {
     let image_views: Vec<Arc<ImageView>> = images
         .iter()
@@ -471,7 +550,7 @@ fn create_frame_buffer(
                 image.clone(),
                 ImageViewCreateInfo {
                     view_type: ImageViewType::Dim2d,
-                    format: Format::R8G8B8A8_SRGB,
+                    format: format,
                     component_mapping: ComponentMapping::identity(),
                     subresource_range: ImageSubresourceRange {
                         aspects: ImageAspects::COLOR,
@@ -540,6 +619,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     // Create the surface fom the window provided by winit
     let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
         .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
+    window_context.surface = Some(surface.clone());
     println!("Successfully created surface");
 
     // Create the swapchain and images
@@ -560,7 +640,11 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     window_context.render_pass = Some(render_pass.clone());
 
     // Create frame buffer
-    let framebuffer = create_frame_buffer(render_pass.clone(), swapchain_images.clone());
+    let framebuffer = create_frame_buffer(
+        render_pass.clone(),
+        &swapchain_images,
+        swapchain.image_format(),
+    );
     window_context.framebuffer = Some(framebuffer.clone());
     println!("Successfully created framebuffer");
 

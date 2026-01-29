@@ -1,6 +1,7 @@
 use color::{AlphaColor, Srgb};
 use std::{
-    collections::{BTreeMap, HashMap}, sync::Arc
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
 };
 use vulkano::{
     Validated, VulkanError,
@@ -122,7 +123,7 @@ impl Shaders {
                 .loaded
                 .get(&s_type)
                 .cloned()
-                .expect("Error: Shader not loaded!")
+                .expect("Error: Shader not loaded!"),
         );
     }
 
@@ -178,13 +179,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
                 ShaderType::VertexCustom => self.load_internal(
                     vs_custom::load(self.queue.device().clone())
@@ -193,13 +194,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
                 ShaderType::VertexWireframe => self.load_internal(
                     vs_wireframe::load(self.queue.device().clone())
@@ -208,13 +209,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
                 ShaderType::FragmentDefault => self.load_internal(
                     fs_default::load(self.queue.device().clone())
@@ -223,13 +224,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
                 ShaderType::FragmentWireframe => self.load_internal(
                     fs_wireframe::load(self.queue.device().clone())
@@ -238,13 +239,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
                 ShaderType::FragmentCustom => self.load_internal(
                     fs_custom::load(self.queue.device().clone())
@@ -253,13 +254,13 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    vColor {
+                    Some(vColor {
                         colors: [
                             [1.0, 0.0, 0.0].into(),
                             [0.0, 1.0, 0.0].into(),
                             [0.0, 0.0, 1.0].into(),
                         ],
-                    },
+                    }),
                 ),
             },
         );
@@ -272,7 +273,7 @@ impl Shaders {
         entry_point: EntryPoint,
         queue: Arc<Queue>,
         stage: ShaderStages,
-        data: T,
+        data: Option<T>,
     ) -> ShaderWithDescriptors {
         let descriptor_set_layout = create_descriptor_set_layout(
             vec![VGFXDescriptorSetLayout {
@@ -284,15 +285,21 @@ impl Shaders {
         )
         .unwrap();
 
-        let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
+        // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
+       let descriptor_layout_with_data= match data {
+            Some(d) => Some(VGFXDescriptorSetLayoutWithData {
             layout: descriptor_set_layout,
-            data: data,
+            data: d,
+        }),
+            None => None,
         };
 
+        // TODO: Find a way to use this function to put every shader on the mesh into the same pipeline
+        // Currently we're creating a whole pipeline with duplicate descriptor sets for each shader
         let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
             vec![
-                descriptor_layout_with_data.clone(),
-                descriptor_layout_with_data,
+                descriptor_layout_with_data.clone().unwrap(),
+                descriptor_layout_with_data.unwrap(),
             ],
             self.host_buffer_allocator.clone(),
             self.device_buffer_allocator.clone(),

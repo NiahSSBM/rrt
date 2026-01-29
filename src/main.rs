@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
+use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -18,6 +19,7 @@ use winit::{
 use crate::game::{GameData, RenderEvent};
 use crate::shader::Shaders;
 use crate::vgfx::update_vertex_buffer;
+use crate::vgfx::Platform;
 
 #[derive(Default)]
 struct App {
@@ -48,7 +50,9 @@ impl ApplicationHandler for App {
             let game_data = GameData {
                 to_render,
                 render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
-                available_shaders: Shaders::new(self.window_contexts[i].queues.clone().unwrap()[0].clone()),
+                available_shaders: Shaders::new(
+                    self.window_contexts[i].queues.clone().unwrap()[0].clone(),
+                ),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             thread::spawn(|| {
@@ -95,10 +99,13 @@ impl ApplicationHandler for App {
                         if should_update_buffers {
                             update_vertex_buffer(window_context);
                         }
-                        
+
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing
-                        if window_context.last_resized.unwrap().elapsed()
-                            > Duration::from_secs_f32(0.5) && window_context.requested_resize
+                        // Unless we're on X11, which needs to be resized when requested
+                        if window_context.requested_resize
+                            && (window_context.last_resized.unwrap().elapsed()
+                                > Duration::from_secs_f32(0.5)
+                                || window_context.platform == Platform::X11)
                         {
                             window_context.last_resized = Some(Instant::now());
                             window_context.should_resize = true;
@@ -120,11 +127,8 @@ impl ApplicationHandler for App {
                     }
                     WindowEvent::Resized(_size) => {
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing
-                        window_context.last_resized = Some(
-                            window_context
-                                .last_resized
-                                .unwrap_or(Instant::now()),
-                        );
+                        window_context.last_resized =
+                            Some(window_context.last_resized.unwrap_or(Instant::now()));
                         window_context.requested_resize = true;
                     }
                     _ => (), //println!("Event received: {:?}", event),
@@ -137,7 +141,10 @@ impl ApplicationHandler for App {
 fn main() {
     // Start initializing the window
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
-    let event_loop = EventLoop::new()
+    // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing wayland
+    let event_loop = EventLoop::builder()
+        .with_wayland()
+        .build()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
 
