@@ -3,7 +3,6 @@ use std::collections::TryReserveError;
 use std::sync::Arc;
 
 use color::AlphaColor;
-use winit::platform::wayland::EventLoopExtWayland;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
@@ -49,6 +48,7 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
+use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::Window;
 
 use crate::game::RenderEvent;
@@ -133,7 +133,7 @@ impl WindowContext {
     }
 }
 
-// A swapchain gets recreated when the window is resized, the previous swapchain image reported as suboptimal, 
+// A swapchain gets recreated when the window is resized, the previous swapchain image reported as suboptimal,
 // or fetching the current swapchain image failed for whatever reason
 pub fn recreate_swapchain(window_context: &mut WindowContext) {
     // Make sure we have a compatible image format and colorspace for the new swapchain and framebuffer before creating them
@@ -428,7 +428,9 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 )),
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
-                ..GraphicsPipelineCreateInfo::layout(mesh.shaders.get_pipelines()[0].clone())
+                ..GraphicsPipelineCreateInfo::layout(
+                    mesh.shaders.get_pipelines_for_entry_point(vs)[0].clone(),
+                )
             },
         )
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));

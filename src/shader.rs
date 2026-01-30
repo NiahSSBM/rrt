@@ -64,7 +64,7 @@ impl Vertex2D {
 #[derive(Clone)]
 pub struct ShaderWithDescriptors {
     pub entry_point: EntryPoint,
-    pub descriptor_set: DescriptorSetWithOffsets,
+    pub descriptor_sets: Vec<DescriptorSetWithOffsets>,
     pub pipeline_layout: Arc<PipelineLayout>,
 }
 
@@ -131,7 +131,9 @@ impl Shaders {
     pub fn get_descriptor_sets(&self) -> Vec<DescriptorSetWithOffsets> {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
-            out.push(shader.descriptor_set.clone());
+            for descriptor in &shader.descriptor_sets {
+                out.push(descriptor.clone());
+            }
         }
         out
     }
@@ -141,6 +143,18 @@ impl Shaders {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
             out.push(shader.pipeline_layout.clone());
+        }
+        out
+    }
+
+    // Returns pipelines for shaders of the same execution model
+    // Ex. Only pipelines for vertex shaders
+    pub fn get_pipelines_for_entry_point(&self, entry: &EntryPoint) -> Vec<Arc<PipelineLayout>> {
+        let mut out = Vec::new();
+        for shader in self.loaded.values() {
+            if entry.info().execution_model == shader.entry_point.info().execution_model {
+                out.push(shader.pipeline_layout.clone());
+            }
         }
         out
     }
@@ -224,13 +238,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    Some(vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
-                        ],
-                    }),
+                    None::<vColor>,
                 ),
                 ShaderType::FragmentWireframe => self.load_internal(
                     fs_wireframe::load(self.queue.device().clone())
@@ -239,13 +247,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    Some(vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
-                        ],
-                    }),
+                    None::<vColor>,
                 ),
                 ShaderType::FragmentCustom => self.load_internal(
                     fs_custom::load(self.queue.device().clone())
@@ -254,13 +256,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    Some(vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
-                        ],
-                    }),
+                    None::<vColor>,
                 ),
             },
         );
@@ -286,21 +282,23 @@ impl Shaders {
         .unwrap();
 
         // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
-       let descriptor_layout_with_data= match data {
+        let descriptor_layout_with_data = match data {
             Some(d) => Some(VGFXDescriptorSetLayoutWithData {
-            layout: descriptor_set_layout,
-            data: d,
-        }),
+                layout: descriptor_set_layout,
+                data: d,
+            }),
             None => None,
         };
+
+        let mut sets: Vec<VGFXDescriptorSetLayoutWithData<T>> = Vec::new();
+        if descriptor_layout_with_data.is_some() {
+            sets.push(descriptor_layout_with_data.unwrap());
+        }
 
         // TODO: Find a way to use this function to put every shader on the mesh into the same pipeline
         // Currently we're creating a whole pipeline with duplicate descriptor sets for each shader
         let (pipeline_layout, descriptor_sets) = push_descriptor_sets(
-            vec![
-                descriptor_layout_with_data.clone().unwrap(),
-                descriptor_layout_with_data.unwrap(),
-            ],
+            sets,
             self.host_buffer_allocator.clone(),
             self.device_buffer_allocator.clone(),
             self.command_buffer_allocator.clone(),
@@ -310,7 +308,7 @@ impl Shaders {
 
         ShaderWithDescriptors {
             entry_point: entry_point,
-            descriptor_set: descriptor_sets[0].clone(),
+            descriptor_sets: descriptor_sets,
             pipeline_layout: pipeline_layout,
         }
     }
