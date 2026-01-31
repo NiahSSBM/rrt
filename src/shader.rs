@@ -90,6 +90,12 @@ struct VGFXDescriptorSetLayoutWithData<T: BufferContents + Clone> {
     data: T,
 }
 
+// This exists so we can use None::<NoDescriptorSet>
+// It allows us to represent there isn't a descriptor set without using a struct in one of our shaders that may or may not exist
+#[repr(C)]
+#[derive(BufferContents, Clone)]
+struct NoDescriptorSet { _this_value_is_intentionally_unused: i32 }
+
 impl Shaders {
     // Create allocators that shaders will be loaded with later
     // These allocators are used for the lifetime of the Shaders struct
@@ -117,6 +123,17 @@ impl Shaders {
     // Takes an already loaded shader and copies it to another struct
     // TODO: Return an actual error when a shader isn't found
     pub fn insert_loaded(&mut self, pre_loaded_shaders: &Self, s_type: ShaderType) {
+        match self.loaded.get(&s_type) {
+            Some(s) => {
+                println!(
+                    "WARNING: Multiple loads for {:?} stage! Only one shader can be loaded for each stage. Skipping load...",
+                    s.entry_point.info().execution_model
+                );
+                return;
+            }
+            None => (),
+        }
+
         self.loaded.insert(
             s_type.clone(),
             pre_loaded_shaders
@@ -149,10 +166,12 @@ impl Shaders {
 
     // Returns pipelines for shaders of the same execution model
     // Ex. Only pipelines for vertex shaders
-    pub fn get_pipelines_for_entry_point(&self, entry: &EntryPoint) -> Vec<Arc<PipelineLayout>> {
+    // This returns a vector, but this will only have multiple elements if shaders were loaded with Shader::load() 
+    // rather than loaded from Shader::insert_loaded()
+    pub fn get_pipelines_for_model(&self, model: ExecutionModel) -> Vec<Arc<PipelineLayout>> {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
-            if entry.info().execution_model == shader.entry_point.info().execution_model {
+            if model == shader.entry_point.info().execution_model {
                 out.push(shader.pipeline_layout.clone());
             }
         }
@@ -223,13 +242,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    Some(vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
-                        ],
-                    }),
+                    None::<NoDescriptorSet>,
                 ),
                 ShaderType::FragmentDefault => self.load_internal(
                     fs_default::load(self.queue.device().clone())
@@ -238,7 +251,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    None::<vColor>,
+                    None::<NoDescriptorSet>,
                 ),
                 ShaderType::FragmentWireframe => self.load_internal(
                     fs_wireframe::load(self.queue.device().clone())
@@ -247,7 +260,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    None::<vColor>,
+                    None::<NoDescriptorSet>,
                 ),
                 ShaderType::FragmentCustom => self.load_internal(
                     fs_custom::load(self.queue.device().clone())
@@ -256,7 +269,7 @@ impl Shaders {
                         .unwrap(),
                     self.queue.clone(),
                     ShaderStages::VERTEX,
-                    None::<vColor>,
+                    None::<NoDescriptorSet>,
                 ),
             },
         );

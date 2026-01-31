@@ -400,7 +400,6 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
         let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
 
-        // TODO: Dynamically input arbitrary number of shaders
         let stages = [
             PipelineShaderStageCreateInfo::new(vs.clone()),
             PipelineShaderStageCreateInfo::new(fs.clone()),
@@ -429,7 +428,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
                 ..GraphicsPipelineCreateInfo::layout(
-                    mesh.shaders.get_pipelines_for_entry_point(vs)[0].clone(),
+                    mesh.shaders.get_pipelines_for_model(vs.info().execution_model)[0].clone(),
                 )
             },
         )
