@@ -23,28 +23,29 @@ pub struct GameData {
 
 pub fn game_main(mut data: GameData) {
     // Initialize shaders
-    data.available_shaders
-        .load(ShaderType::VertexDefault);
-    data.available_shaders
-        .load(ShaderType::VertexCustom);
-    data.available_shaders
-        .load(ShaderType::VertexWireframe);
-
-    data.available_shaders
-        .load(ShaderType::FragmentDefault);
-    data.available_shaders
-        .load(ShaderType::FragmentCustom);
-    data.available_shaders
-        .load(ShaderType::FragmentWireframe);
+    //data.available_shaders
+    //    .load(ShaderType::VertexDefault);
+    //data.available_shaders
+    //    .load(ShaderType::VertexCustom);
+    //data.available_shaders
+    //    .load(ShaderType::VertexWireframe);
+//
+    //data.available_shaders
+    //    .load(ShaderType::FragmentDefault);
+    //data.available_shaders
+    //    .load(ShaderType::FragmentCustom);
+    //data.available_shaders
+    //    .load(ShaderType::FragmentWireframe);
 
     // Only use needed shaders for each mesh
     let mut first_tri_shaders = Shaders::new(data.render_queue.clone());
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
+    first_tri_shaders.load(vec![ShaderType::VertexCustom, ShaderType::FragmentCustom]);
+    //first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexCustom);
+    //first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentCustom);
 
-    let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
+    //let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
+    //second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
+    //second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
 
     let mut meshes = vec![];
     let mesh = Mesh::new(
@@ -56,15 +57,15 @@ pub fn game_main(mut data: GameData) {
         first_tri_shaders,
     );
     meshes.push(mesh);
-    let mesh = Mesh::new(
-        vec![
-            Vertex2D::new([1.0, 0.5], AlphaColor::WHITE),
-            Vertex2D::new([0.5, -0.5], AlphaColor::WHITE),
-            Vertex2D::new([0.0, 0.5], AlphaColor::WHITE),
-        ],
-        second_tri_shaders,
-    );
-    meshes.push(mesh);
+    //let mesh = Mesh::new(
+    //    vec![
+    //        Vertex2D::new([1.0, 0.5], AlphaColor::WHITE),
+    //        Vertex2D::new([0.5, -0.5], AlphaColor::WHITE),
+    //        Vertex2D::new([0.0, 0.5], AlphaColor::WHITE),
+    //    ],
+    //    second_tri_shaders,
+    //);
+    //meshes.push(mesh);
     for mesh in meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))

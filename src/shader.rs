@@ -1,3 +1,4 @@
+use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -26,8 +27,6 @@ use vulkano::{
     shader::{EntryPoint, ShaderStages, spirv::ExecutionModel},
     sync::GpuFuture,
 };
-
-use crate::shader::vs_default::vColor;
 
 // When adding new shader types, you must add a new load leaf in Shaders::load()
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
@@ -90,11 +89,19 @@ struct VGFXDescriptorSetLayoutWithData<T: BufferContents + Clone> {
     data: T,
 }
 
+struct StageData<'a> {
+    entry: EntryPoint,
+    stage: ShaderStages,
+    data: &'a [u8],
+}
+
 // This exists so we can use None::<NoDescriptorSet>
 // It allows us to represent there isn't a descriptor set without using a struct in one of our shaders that may or may not exist
 #[repr(C)]
 #[derive(BufferContents, Clone)]
-struct NoDescriptorSet { _this_value_is_intentionally_unused: i32 }
+struct NoDescriptorSet {
+    _this_value_is_intentionally_unused: i32,
+}
 
 impl Shaders {
     // Create allocators that shaders will be loaded with later
@@ -156,6 +163,7 @@ impl Shaders {
     }
 
     // Returns pipelines for all loaded shaders
+    // Generally this should only be 1 pipeline
     pub fn get_pipelines(&self) -> Vec<Arc<PipelineLayout>> {
         let mut out = Vec::new();
         for shader in self.loaded.values() {
@@ -166,7 +174,7 @@ impl Shaders {
 
     // Returns pipelines for shaders of the same execution model
     // Ex. Only pipelines for vertex shaders
-    // This returns a vector, but this will only have multiple elements if shaders were loaded with Shader::load() 
+    // This returns a vector, but this will only have multiple elements if shaders were loaded with Shader::load()
     // rather than loaded from Shader::insert_loaded()
     pub fn get_pipelines_for_model(&self, model: ExecutionModel) -> Vec<Arc<PipelineLayout>> {
         let mut out = Vec::new();
@@ -201,89 +209,81 @@ impl Shaders {
     // TODO: Return an actual error when a shader isn't found
     // Each shader is matched to descriptor set input data
     // For each new shader, a new match leaf is required
-    pub fn load(&mut self, s_type: ShaderType) {
-        self.loaded.insert(
-            s_type.clone(),
-            match s_type {
-                ShaderType::VertexDefault => self.load_internal(
-                    vs_default::load(self.queue.device().clone())
+    pub fn load(&mut self, stages: Vec<ShaderType>) {
+        let mut stage_data: Vec<StageData> = Vec::new();
+        for stage in stages {
+            stage_data.push(match stage {
+                ShaderType::VertexDefault => StageData {
+                    entry: vs_default::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    Some(vColor {
+                    stage: ShaderStages::VERTEX,
+                    data: bytes_of(&vs_default::vColor {
                         colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
+                            [1.0, 0.0, 0.0, 1.0].into(),
+                            [0.0, 1.0, 0.0, 1.0].into(),
+                            [0.0, 0.0, 1.0, 1.0].into(),
                         ],
                     }),
-                ),
-                ShaderType::VertexCustom => self.load_internal(
-                    vs_custom::load(self.queue.device().clone())
+                },
+                ShaderType::VertexCustom => StageData {
+                    entry: vs_custom::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    Some(vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0].into(),
-                            [0.0, 1.0, 0.0].into(),
-                            [0.0, 0.0, 1.0].into(),
-                        ],
-                    }),
-                ),
-                ShaderType::VertexWireframe => self.load_internal(
-                    vs_wireframe::load(self.queue.device().clone())
+                    stage: ShaderStages::VERTEX,
+                    data: bytes_of(&fs_custom::fColor { color_offset: 0.5 }),
+                },
+                ShaderType::VertexWireframe => StageData {
+                    entry: vs_wireframe::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    None::<NoDescriptorSet>,
-                ),
-                ShaderType::FragmentDefault => self.load_internal(
-                    fs_default::load(self.queue.device().clone())
+                    stage: ShaderStages::VERTEX,
+                    data: bytes_of::<[u8; 0]>(&[]),
+                },
+                ShaderType::FragmentDefault => StageData {
+                    entry: fs_default::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    None::<NoDescriptorSet>,
-                ),
-                ShaderType::FragmentWireframe => self.load_internal(
-                    fs_wireframe::load(self.queue.device().clone())
+                    stage: ShaderStages::FRAGMENT,
+                    data: bytes_of::<[u8; 0]>(&[]),
+                },
+                ShaderType::FragmentCustom => StageData {
+                    entry: fs_custom::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    None::<NoDescriptorSet>,
-                ),
-                ShaderType::FragmentCustom => self.load_internal(
-                    fs_custom::load(self.queue.device().clone())
+                    stage: ShaderStages::FRAGMENT,
+                    data: bytes_of::<[u8; 0]>(&[]),
+                },
+                ShaderType::FragmentWireframe => StageData {
+                    entry: fs_wireframe::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    self.queue.clone(),
-                    ShaderStages::VERTEX,
-                    None::<NoDescriptorSet>,
-                ),
-            },
-        );
+                    stage: ShaderStages::FRAGMENT,
+                    data: bytes_of::<[u8; 0]>(&[]),
+                },
+            });
+
+            //self.loaded.insert(stage.clone());
+        }
     }
 
     // This takes some data and an input shader and puts them together on the GPU
     // Returning what needs to be attached to the shader so it can be fully rendered
-    fn load_internal<T: BufferContents + Clone>(
+    fn load_internal(
         &self,
-        entry_point: EntryPoint,
+        stage_data: Vec<StageData>,
+        //entry_point: EntryPoint,
         queue: Arc<Queue>,
-        stage: ShaderStages,
-        data: Option<T>,
+        //stage: ShaderStages,
+        //data: &[u8],
     ) -> ShaderWithDescriptors {
+        // This might not need to return anything
         let descriptor_set_layout = create_descriptor_set_layout(
             vec![VGFXDescriptorSetLayout {
                 stage: stage,
@@ -480,6 +480,7 @@ pub mod vs_default {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "shaders/vert_default.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }
 
@@ -487,6 +488,7 @@ pub mod fs_default {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/frag_default.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }
 
@@ -494,6 +496,7 @@ pub mod vs_custom {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "shaders/vert.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }
 
@@ -501,6 +504,7 @@ pub mod fs_custom {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/frag.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }
 
@@ -508,6 +512,7 @@ pub mod fs_wireframe {
     vulkano_shaders::shader! {
         ty: "fragment",
         path: "shaders/frag_wireframe.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }
 
@@ -515,5 +520,6 @@ pub mod vs_wireframe {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "shaders/vert_wireframe.glsl",
+        custom_derives: [Copy, Clone, bytemuck::NoUninit]
     }
 }

@@ -427,8 +427,9 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 )),
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
+                // There should only be 1 pipeline, all stages are included in the pipeline
                 ..GraphicsPipelineCreateInfo::layout(
-                    mesh.shaders.get_pipelines_for_model(vs.info().execution_model)[0].clone(),
+                    mesh.shaders.get_pipelines()[0].clone(),
                 )
             },
         )

@@ -3,7 +3,7 @@
 #version 460
 #extension GL_EXT_fragment_shader_barycentric : require
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec4 fragColor;
 layout(location = 0) out vec4 f_color;
 
 void main() {
