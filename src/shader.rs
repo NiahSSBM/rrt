@@ -84,9 +84,9 @@ struct VGFXDescriptorSetLayout {
 }
 
 #[derive(Clone)]
-struct VGFXDescriptorSetLayoutWithData<T: BufferContents + Clone> {
+struct VGFXDescriptorSetLayoutWithData<'a> {
     layout: Arc<DescriptorSetLayout>,
-    data: T,
+    data: &'a [u8],
 }
 
 struct StageData<'a> {
@@ -211,6 +211,13 @@ impl Shaders {
     // For each new shader, a new match leaf is required
     pub fn load(&mut self, stages: Vec<ShaderType>) {
         let mut stage_data: Vec<StageData> = Vec::new();
+        let raw_data = vs_default::vColor {
+            colors: [
+                [1.0, 0.0, 0.0, 1.0].into(),
+                [0.0, 1.0, 0.0, 1.0].into(),
+                [0.0, 0.0, 1.0, 1.0].into(),
+            ],
+        };
         for stage in stages {
             stage_data.push(match stage {
                 ShaderType::VertexDefault => StageData {
@@ -219,13 +226,7 @@ impl Shaders {
                         .entry_point("main")
                         .unwrap(),
                     stage: ShaderStages::VERTEX,
-                    data: bytes_of(&vs_default::vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0, 1.0].into(),
-                            [0.0, 1.0, 0.0, 1.0].into(),
-                            [0.0, 0.0, 1.0, 1.0].into(),
-                        ],
-                    }),
+                    data: bytes_of(&raw_data),
                 },
                 ShaderType::VertexCustom => StageData {
                     entry: vs_custom::load(self.queue.device().clone())
@@ -268,9 +269,10 @@ impl Shaders {
                     data: bytes_of::<[u8; 0]>(&[]),
                 },
             });
-
             //self.loaded.insert(stage.clone());
         }
+
+        self.load_internal(stage_data, self.queue.clone());
     }
 
     // This takes some data and an input shader and puts them together on the GPU
@@ -282,30 +284,28 @@ impl Shaders {
         queue: Arc<Queue>,
         //stage: ShaderStages,
         //data: &[u8],
-    ) -> ShaderWithDescriptors {
-        // This might not need to return anything
-        let descriptor_set_layout = create_descriptor_set_layout(
-            vec![VGFXDescriptorSetLayout {
-                stage: stage,
-                descriptor_type: DescriptorType::StorageBuffer,
-                descriptor_count: 1,
-            }],
-            queue.device().clone(),
-        )
-        .unwrap();
+    ) {
+        // TODO: Verify each needed stage is present
+        let mut sets: Vec<VGFXDescriptorSetLayoutWithData> = Vec::new();
 
-        // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
-        let descriptor_layout_with_data = match data {
-            Some(d) => Some(VGFXDescriptorSetLayoutWithData {
+        for data in stage_data {
+            let descriptor_set_layout = create_descriptor_set_layout(
+                vec![VGFXDescriptorSetLayout {
+                    stage: data.stage,
+                    descriptor_type: DescriptorType::StorageBuffer,
+                    descriptor_count: 1,
+                }],
+                queue.device().clone(),
+            )
+            .unwrap();
+
+            // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
+            let descriptor_layout_with_data = VGFXDescriptorSetLayoutWithData {
                 layout: descriptor_set_layout,
-                data: d,
-            }),
-            None => None,
-        };
+                data: data.data,
+            };
 
-        let mut sets: Vec<VGFXDescriptorSetLayoutWithData<T>> = Vec::new();
-        if descriptor_layout_with_data.is_some() {
-            sets.push(descriptor_layout_with_data.unwrap());
+            sets.push(descriptor_layout_with_data);
         }
 
         // TODO: Find a way to use this function to put every shader on the mesh into the same pipeline
@@ -318,12 +318,6 @@ impl Shaders {
             self.descriptor_set_allocator.clone(),
             queue.clone(),
         );
-
-        ShaderWithDescriptors {
-            entry_point: entry_point,
-            descriptor_sets: descriptor_sets,
-            pipeline_layout: pipeline_layout,
-        }
     }
 }
 
@@ -367,16 +361,16 @@ fn create_descriptor_set_layout(
 // - The data to get sent to the GPU
 // - A few memory allocators
 // - A device queue
-fn push_descriptor_sets<T: Send + Sync + BufferContents + Clone>(
-    sets: Vec<VGFXDescriptorSetLayoutWithData<T>>,
+fn push_descriptor_sets(
+    sets: Vec<VGFXDescriptorSetLayoutWithData>,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     queue: Arc<Queue>,
 ) -> (Arc<PipelineLayout>, Vec<DescriptorSetWithOffsets>) {
-    let mut host_buffers: Vec<Subbuffer<T>> = Vec::new();
-    let mut device_buffers: Vec<Subbuffer<T>> = Vec::new();
+    let mut host_buffers: Vec<Subbuffer<u8>> = Vec::new();
+    let mut device_buffers: Vec<Subbuffer<u8>> = Vec::new();
     let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
     let mut descriptor_sets: Vec<DescriptorSetWithOffsets> = Vec::new();
 
