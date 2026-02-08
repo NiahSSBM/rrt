@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
 
 use color::AlphaColor;
 use color::palette::css;
 use vulkano::device::Queue;
+use vulkano::shader::ShaderStage;
 
 use crate::mesh::Mesh;
 use crate::shader::ShaderType;
@@ -18,33 +20,20 @@ pub enum RenderEvent {
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
     pub render_queue: Arc<Queue>,
-    pub available_shaders: Shaders,
+    //pub available_shaders: Shaders,
 }
 
 pub fn game_main(mut data: GameData) {
-    // Initialize shaders
-    data.available_shaders
-        .load(ShaderType::VertexDefault);
-    data.available_shaders
-        .load(ShaderType::VertexCustom);
-    data.available_shaders
-        .load(ShaderType::VertexWireframe);
+    // Load shaders
+    let stage_pipeline = HashMap::from([
+        (ShaderStage::Vertex, ShaderType::VertexDefault),
+        (ShaderStage::Fragment, ShaderType::FragmentDefault),
+    ]);
+    let first_tri_shaders = Shaders::new(stage_pipeline, data.render_queue.clone());
 
-    data.available_shaders
-        .load(ShaderType::FragmentDefault);
-    data.available_shaders
-        .load(ShaderType::FragmentCustom);
-    data.available_shaders
-        .load(ShaderType::FragmentWireframe);
-
-    // Only use needed shaders for each mesh
-    let mut first_tri_shaders = Shaders::new(data.render_queue.clone());
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexDefault);
-    first_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentDefault);
-
-    let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
-    second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
+    //let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
+    //second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
+    //second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::FragmentWireframe);
 
     let mut meshes = vec![];
     let mesh = Mesh::new(
@@ -56,15 +45,15 @@ pub fn game_main(mut data: GameData) {
         first_tri_shaders,
     );
     meshes.push(mesh);
-    let mesh = Mesh::new(
-        vec![
-            Vertex2D::new([1.0, 0.5], AlphaColor::WHITE),
-            Vertex2D::new([0.5, -0.5], AlphaColor::WHITE),
-            Vertex2D::new([0.0, 0.5], AlphaColor::WHITE),
-        ],
-        second_tri_shaders,
-    );
-    meshes.push(mesh);
+    //let mesh = Mesh::new(
+    //    vec![
+    //        Vertex2D::new([1.0, 0.5], AlphaColor::WHITE),
+    //        Vertex2D::new([0.5, -0.5], AlphaColor::WHITE),
+    //        Vertex2D::new([0.0, 0.5], AlphaColor::WHITE),
+    //    ],
+    //    second_tri_shaders,
+    //);
+    //meshes.push(mesh);
     for mesh in meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
