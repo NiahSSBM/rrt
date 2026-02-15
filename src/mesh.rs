@@ -1,17 +1,17 @@
-use crate::shader::{Shaders, Vertex2D};
+use crate::shader::{Shader, Vertex2D};
 
 #[derive(Clone)]
 pub struct Mesh {
     pub verticies: Vec<Vertex2D>,
-    pub shaders: Shaders,
+    pub shader: Shader,
     _id: u32, // unused
 }
 
 impl Mesh {
-    pub fn new(verts: Vec<Vertex2D>, shaders: Shaders) -> Self {
+    pub fn new(verts: Vec<Vertex2D>, shader: Shader) -> Self {
         Self {
             verticies: verts,
-            shaders: shaders,
+            shader: shader,
             _id: 0, // unused
         }
     }

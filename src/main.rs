@@ -17,7 +17,6 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::shader::Shaders;
 use crate::vgfx::update_vertex_buffer;
 use crate::vgfx::Platform;
 

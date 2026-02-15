@@ -3,6 +3,7 @@ use std::collections::TryReserveError;
 use std::sync::Arc;
 
 use color::AlphaColor;
+use vulkano::shader::ShaderStage;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
@@ -390,12 +391,12 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
     for mesh in &mut window_context.meshes {
         let vs = mesh
-            .shaders
-            .get_entry(ExecutionModel::Vertex)
+            .shader
+            .stage_entries.get(&ShaderStage::Vertex)
             .expect("Error: No vertex shader found!");
         let fs = mesh
-            .shaders
-            .get_entry(ExecutionModel::Fragment)
+            .shader
+            .stage_entries.get(&ShaderStage::Fragment)
             .expect("Error: No fragment shader found!");
 
         let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
@@ -428,7 +429,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
                 ..GraphicsPipelineCreateInfo::layout(
-                    mesh.shaders.get_pipelines_for_model(vs.info().execution_model)[0].clone(),
+                    mesh.shader.pipeline_layout.clone().unwrap(),
                 )
             },
         )
@@ -491,7 +492,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
                         0,
-                        mesh.shaders.get_descriptor_sets(),
+                        mesh.shader.descriptor_sets.clone(),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 

@@ -3,6 +3,7 @@ use color::{AlphaColor, Srgb};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
+    vec,
 };
 use vulkano::{
     Validated, VulkanError,
@@ -64,16 +65,12 @@ impl Vertex2D {
 }
 
 #[derive(Clone)]
-pub struct ShaderWithDescriptors {
-    pub entry_point: EntryPoint,
-    pub descriptor_sets: Vec<DescriptorSetWithOffsets>,
-    pub pipeline_layout: Arc<PipelineLayout>,
-}
-
-#[derive(Clone)]
-pub struct Shaders {
+pub struct Shader {
     stage_pipeline: HashMap<ShaderStage, ShaderType>,
+    pub stage_entries: HashMap<ShaderStage, EntryPoint>,
     queue: Arc<Queue>,
+    pub pipeline_layout: Option<Arc<PipelineLayout>>,
+    pub descriptor_sets: Vec<DescriptorSetWithOffsets>,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
@@ -87,12 +84,13 @@ struct VGFXDescriptorSetLayout {
 }
 
 #[derive(Clone)]
-struct VGFXDescriptorSetLayoutWithData<'a>{
+struct VGFXDescriptorSetLayoutWithData<'a> {
     layout: Arc<DescriptorSetLayout>,
     data: &'a [u8],
     size: usize,
 }
 
+#[derive(Clone)]
 struct ShaderLoadData<'a> {
     entry: EntryPoint,
     data: &'a [u8],
@@ -107,18 +105,19 @@ struct NoDescriptorSet {
     _this_value_is_intentionally_unused: i32,
 }
 
-impl Shaders {
+impl Shader {
     // Create allocators that shaders will be loaded with later
     // These allocators are used for the lifetime of the Shaders struct
     pub fn new(stage_pipeline: HashMap<ShaderStage, ShaderType>, queue: Arc<Queue>) -> Self {
         // TODO: Verify requested stages are compatible with each other
         // eg: no duplicates and vertex stage is present
 
-        // TODO: Call self::load here with stage_pipeline
-        // Possibly store some returned data for later
-        Self {
+        let shader = Self {
             stage_pipeline,
+            stage_entries: HashMap::new(),
             queue: queue.clone(),
+            pipeline_layout: None,
+            descriptor_sets: vec![],
             host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
                 queue.device().clone(),
             )),
@@ -133,7 +132,9 @@ impl Shaders {
                 queue.device().clone(),
                 Default::default(),
             )),
-        }
+        };
+
+        shader.load()
     }
 
     // Takes an already loaded shader and copies it to another struct
@@ -171,7 +172,7 @@ impl Shaders {
     //    out
     //}
 
-    //// Returns pipelines for all loaded shaders
+    // Returns pipelines for all loaded shaders
     //pub fn get_pipelines(&self) -> Vec<Arc<PipelineLayout>> {
     //    let mut out = Vec::new();
     //    for shader in self.loaded.values() {
@@ -180,10 +181,10 @@ impl Shaders {
     //    out
     //}
 
-    //// Returns pipelines for shaders of the same execution model
-    //// Ex. Only pipelines for vertex shaders
-    //// This returns a vector, but this will only have multiple elements if shaders were loaded with Shader::load()
-    //// rather than loaded from Shader::insert_loaded()
+    // Returns pipelines for shaders of the same execution model
+    // Ex. Only pipelines for vertex shaders
+    // This returns a vector, but this will only have multiple elements if shaders were loaded with Shader::load()
+    // rather than loaded from Shader::insert_loaded()
     //pub fn get_pipelines_for_model(&self, model: ExecutionModel) -> Vec<Arc<PipelineLayout>> {
     //    let mut out = Vec::new();
     //    for shader in self.loaded.values() {
@@ -194,31 +195,12 @@ impl Shaders {
     //    out
     //}
 
-    //// Returns the shader of the specified type (vertex, fragment, etc...)
-    //// Panics if multiple types are found
-    pub fn get_entry(&self, execution_model: ExecutionModel) -> Option<&EntryPoint> {
-        let mut entry: Option<&EntryPoint> = None;
-        for shader in self.loaded.values() {
-            let current = &shader.entry_point;
-            if current.info().execution_model == execution_model {
-                // I'm not sure yet what to do with multiple shaders
-                // It's probably a normal thing to do but IDK yet
-                if entry.is_some() {
-                    panic!(
-                        "Error: More than one {execution_model:?} shader found! Only one {execution_model:?} shader per mesh is supported currently"
-                    );
-                }
-                entry = Some(&shader.entry_point);
-            }
-        }
-        entry
-    }
-
     // TODO: Return an actual error when a shader isn't found
     // Each shader is matched to descriptor set input data
     // For each new shader, a new match leaf is required
-    pub fn load(&mut self, stage_pipeline: HashMap<ShaderStage, ShaderType>) {
+    fn load(&self) -> Self {
         let mut stage_pipeline_data: HashMap<ShaderStage, ShaderLoadData> = HashMap::new();
+        let mut stage_entries: HashMap<ShaderStage, EntryPoint> = HashMap::new();
 
         let temp_color_data = vs_default::vColor {
             colors: [
@@ -229,7 +211,7 @@ impl Shaders {
         };
         let temp_offset_data = fs_default::colorOffset { offset: 0.5 };
 
-        for (s_stage, s_type) in stage_pipeline {
+        for (s_stage, s_type) in self.stage_pipeline.clone() {
             let load_data = match s_type {
                 ShaderType::VertexDefault => ShaderLoadData {
                     entry: vs_default::load(self.queue.device().clone())
@@ -281,10 +263,19 @@ impl Shaders {
                 },
             };
 
+            stage_entries.insert(s_stage, load_data.entry.clone());
             stage_pipeline_data.insert(s_stage, load_data);
         }
 
-        self.load_internal(self.queue.clone(), stage_pipeline_data);
+        let (descriptor_sets, pipeline_layout) =
+            self.load_internal(self.queue.clone(), stage_pipeline_data);
+
+        Shader {
+            descriptor_sets,
+            pipeline_layout: Some(pipeline_layout),
+            stage_entries: stage_entries,
+            ..self.clone()
+        }
     }
 
     // This takes some data and an input shader and puts them together on the GPU
@@ -293,7 +284,7 @@ impl Shaders {
         &self,
         queue: Arc<Queue>,
         stage_pipeline_data: HashMap<ShaderStage, ShaderLoadData>,
-    ) {
+    ) -> (Vec<DescriptorSetWithOffsets>, Arc<PipelineLayout>) {
         // Put all stages into a vector describing the type of data we have
         // Only doing storage buffers for now
         let descriptor_set_layout_create_info = stage_pipeline_data
@@ -310,14 +301,15 @@ impl Shaders {
                 .unwrap();
 
         // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
-        let descriptor_layouts_with_data: Vec<VGFXDescriptorSetLayoutWithData> = stage_pipeline_data
-            .values()
-            .map(|d| VGFXDescriptorSetLayoutWithData {
-                layout: descriptor_set_layout.clone(),
-                data: d.data,
-                size: d.size,
-            })
-            .collect();
+        let descriptor_layouts_with_data: Vec<VGFXDescriptorSetLayoutWithData> =
+            stage_pipeline_data
+                .values()
+                .map(|d| VGFXDescriptorSetLayoutWithData {
+                    layout: descriptor_set_layout.clone(),
+                    data: d.data,
+                    size: d.size,
+                })
+                .collect();
 
         // TODO: Find a way to use this function to put every shader on the mesh into the same pipeline
         // Currently we're creating a whole pipeline with duplicate descriptor sets for each shader
@@ -330,12 +322,7 @@ impl Shaders {
             queue.clone(),
         );
 
-        // This might not be needed
-        ShaderWithDescriptors {
-            entry_point: entry_point,
-            descriptor_sets: descriptor_sets,
-            pipeline_layout: pipeline_layout,
-        }
+        (descriptor_sets, pipeline_layout)
     }
 }
 
@@ -373,13 +360,21 @@ fn create_descriptor_set_layout(
     DescriptorSetLayout::new(device.clone(), create_info)
 }
 
+fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_MAX_SIZE] {
+    let mut out: [u8; STORAGE_BUFFER_MAX_SIZE] = [0; STORAGE_BUFFER_MAX_SIZE];
+    for (i, byte) in data.iter().enumerate() {
+        out[i] = *byte;
+    }
+    out 
+}
+
 // This function combines a descriptor set layout and associated data, sends it to the GPU, and returns the descriptor set in GPU memory
 // We need:
 // - A descriptor set layout. create_descriptor_set_layout() does this
 // - The data to get sent to the GPU
 // - A few memory allocators
 // - A device queue
-fn push_descriptor_sets (
+fn push_descriptor_sets(
     sets: Vec<VGFXDescriptorSetLayoutWithData>,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
@@ -394,7 +389,7 @@ fn push_descriptor_sets (
 
     for set in sets {
         // Data needs to have a known size
-        let data: [u8; STORAGE_BUFFER_MAX_SIZE] = try_cast_slice(set.data).expect("ERROR: Storage buffer data is of different size than STORAGE_BUFFER_MAX_SIZE")[0];
+        let data: [u8; STORAGE_BUFFER_MAX_SIZE] = pad(set.data);
 
         // Copy descriptor data into a buffer located in host memory
         // This will get copied over to device memory later

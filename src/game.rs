@@ -9,7 +9,7 @@ use vulkano::shader::ShaderStage;
 
 use crate::mesh::Mesh;
 use crate::shader::ShaderType;
-use crate::shader::Shaders;
+use crate::shader::Shader;
 use crate::shader::Vertex2D;
 
 pub enum RenderEvent {
@@ -29,7 +29,7 @@ pub fn game_main(mut data: GameData) {
         (ShaderStage::Vertex, ShaderType::VertexDefault),
         (ShaderStage::Fragment, ShaderType::FragmentDefault),
     ]);
-    let first_tri_shaders = Shaders::new(stage_pipeline, data.render_queue.clone());
+    let first_tri_shaders = Shader::new(stage_pipeline, data.render_queue.clone());
 
     //let mut second_tri_shaders = Shaders::new(data.render_queue.clone());
     //second_tri_shaders.insert_loaded(&data.available_shaders, ShaderType::VertexWireframe);
