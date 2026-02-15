@@ -3,7 +3,6 @@ use std::collections::TryReserveError;
 use std::sync::Arc;
 
 use color::AlphaColor;
-use vulkano::shader::ShaderStage;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use std::vec;
@@ -40,6 +39,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::shader::ShaderStage;
 use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -392,11 +392,13 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     for mesh in &mut window_context.meshes {
         let vs = mesh
             .shader
-            .stage_entries.get(&ShaderStage::Vertex)
+            .stage_entries
+            .get(&ShaderStage::Vertex)
             .expect("Error: No vertex shader found!");
         let fs = mesh
             .shader
-            .stage_entries.get(&ShaderStage::Fragment)
+            .stage_entries
+            .get(&ShaderStage::Fragment)
             .expect("Error: No fragment shader found!");
 
         let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
@@ -428,9 +430,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 )),
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
-                ..GraphicsPipelineCreateInfo::layout(
-                    mesh.shader.pipeline_layout.clone().unwrap(),
-                )
+                ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
             },
         )
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
@@ -483,6 +483,19 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 let vertex_buffer_slice = vertex_buffer
                     .clone()
                     .slice((3 * i) as u64..(3 * (i + 1)) as u64);
+
+                // This is likely temporary
+                // I'm not sure yet if we need to order descriptor sets before they get pushed to the GPU
+                // When binding the descriptor sets below, the call wants a vector and not a map
+                let mut descriptor_vec: Vec<vulkano::descriptor_set::DescriptorSetWithOffsets> =
+                    Vec::new();
+                for (_, binding) in mesh.shader.descriptor_sets.clone().drain() {
+                    for (_, set) in binding {
+                        descriptor_vec.push(set);
+                    }
+                }
+                println!("Descriptor len: {}", descriptor_vec.len());
+
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
@@ -492,7 +505,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
                         0,
-                        mesh.shader.descriptor_sets.clone(),
+                        descriptor_vec,
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 
