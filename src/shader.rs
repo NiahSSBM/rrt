@@ -209,7 +209,7 @@ impl Shader {
                 [0.0, 0.0, 1.0, 1.0].into(),
             ],
         };
-        let temp_offset_data = fs_default::colorOffset { offset: 0.5 };
+        let temp_offset_data = fs_default::colorOffset { offset: 0.0 };
 
         for (s_stage, s_type) in self.stage_pipeline.clone() {
             let load_data = match s_type {
@@ -243,7 +243,7 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     data: bytes_of(&temp_offset_data),
-                    size: size_of::<[u8; 0]>(),
+                    size: size_of::<fs_default::colorOffset>(),
                 },
                 ShaderType::FragmentWireframe => ShaderLoadData {
                     entry: fs_wireframe::load(self.queue.device().clone())
@@ -300,7 +300,6 @@ impl Shader {
             create_descriptor_set_layout(descriptor_set_layout_create_info, queue.device().clone())
                 .unwrap();
 
-        // Only create a descriptor set layout if we have data, otherwise it's None, and a descriptor set eventually doesn't get bound
         let descriptor_layouts_with_data: Vec<VGFXDescriptorSetLayoutWithData> =
             stage_pipeline_data
                 .values()
@@ -343,7 +342,7 @@ fn create_descriptor_set_layout(
     for i in 0..layouts.len() {
         let binding = DescriptorSetLayoutBinding {
             descriptor_count: layouts[i].descriptor_count,
-            stages: layouts[i].stage.into(), // We only support 1 stage for now. ShaderStages is a superset of ShaderStage
+            stages: ShaderStages::all_graphics(), // We only support 1 stage for now. ShaderStages is a superset of ShaderStage
             immutable_samplers: Vec::new(),
             ..DescriptorSetLayoutBinding::descriptor_type(layouts[i].descriptor_type)
         };
