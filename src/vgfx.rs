@@ -484,18 +484,6 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     .clone()
                     .slice((3 * i) as u64..(3 * (i + 1)) as u64);
 
-                // This is likely temporary
-                // I'm not sure yet if we need to order descriptor sets before they get pushed to the GPU
-                // When binding the descriptor sets below, the call wants a vector and not a map
-                let mut descriptor_vec: Vec<vulkano::descriptor_set::DescriptorSetWithOffsets> =
-                    Vec::new();
-                for (_, binding) in mesh.shader.descriptor_sets.clone().drain() {
-                    for (_, set) in binding {
-                        descriptor_vec.push(set);
-                    }
-                }
-                println!("Descriptor len: {}", descriptor_vec.len());
-
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
@@ -505,7 +493,22 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
                         0,
-                        descriptor_vec,
+                        (
+                            mesh.shader
+                                .descriptor_sets
+                                .get(&ShaderStage::Vertex)
+                                .unwrap()
+                                .get(&0)
+                                .unwrap()
+                                .clone(),
+                            mesh.shader
+                                .descriptor_sets
+                                .get(&ShaderStage::Fragment)
+                                .unwrap()
+                                .get(&0)
+                                .unwrap()
+                                .clone(),
+                        ),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 

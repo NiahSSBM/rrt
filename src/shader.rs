@@ -479,16 +479,6 @@ fn push_descriptor_sets(
         descriptor_sets.insert(*stage, current_descriptor_set_bindings);
     }
 
-    // This is likely temporary
-    // I'm not sure yet if we need to order descriptor sets before they get pushed to the GPU
-    // When binding the descriptor sets below, the call wants a vector and not a map
-    let mut descriptor_vec: Vec<DescriptorSetWithOffsets> = Vec::new();
-    for (_, binding) in descriptor_sets.drain() {
-        for (_, set) in binding {
-            descriptor_vec.push(set);
-        }
-    }
-
     // Create a pipeline to copy our data from the host to the device
     let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
         queue.device().clone(),
@@ -519,7 +509,20 @@ fn push_descriptor_sets(
         vulkano::pipeline::PipelineBindPoint::Graphics,
         pipeline_layout.clone(),
         0,
-        descriptor_vec,
+        (
+            descriptor_sets
+                .get(&ShaderStage::Vertex)
+                .unwrap()
+                .get(&0)
+                .unwrap()
+                .clone(),
+            descriptor_sets
+                .get(&ShaderStage::Fragment)
+                .unwrap()
+                .get(&0)
+                .unwrap()
+                .clone(),
+        ),
     )
     .unwrap();
     let cb = cbb.build().unwrap();
