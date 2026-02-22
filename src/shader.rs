@@ -31,7 +31,7 @@ use vulkano::{
 };
 
 // Size in bytes
-const STORAGE_BUFFER_MAX_SIZE: usize = 1024;
+const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
 
 // When adding new shader types, you must add a new load leaf in Shaders::load()
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
@@ -83,11 +83,12 @@ struct VGFXDescriptorSetLayout {
     descriptor_count: u32,
 }
 
+// DescriptorSetLayout contains each binding
+// This struct contains the data that goes with each binding
 #[derive(Clone)]
-struct VGFXDescriptorSetLayoutWithData<'a> {
+struct VGFXDescriptorSetLayoutWithData {
     layout: Arc<DescriptorSetLayout>,
-    data: &'a [u8],
-    size: usize,
+    data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]>,
 }
 
 #[derive(Clone)]
@@ -401,7 +402,7 @@ fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_MAX_SIZE] {
 // - A few memory allocators
 // - A device queue
 fn push_descriptor_sets(
-    sets: HashMap<ShaderStage, BTreeMap<u32, VGFXDescriptorSetLayoutWithData>>,
+    descriptor_set_with_data: VGFXDescriptorSetLayoutWithData,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
@@ -409,74 +410,67 @@ fn push_descriptor_sets(
     queue: Arc<Queue>,
 ) -> (
     Arc<PipelineLayout>,
-    HashMap<ShaderStage, BTreeMap<u32, DescriptorSetWithOffsets>>,
+    BTreeMap<u32, DescriptorSetWithOffsets>,
 ) {
-    // These Vecs might need to be hashmaps
-    let mut host_buffers: Vec<Subbuffer<[u8; STORAGE_BUFFER_MAX_SIZE]>> = Vec::new();
-    let mut device_buffers: Vec<Subbuffer<[u8; STORAGE_BUFFER_MAX_SIZE]>> = Vec::new();
+    // Right now we only process one descriptor set layout here
+    // Pipeline creation requires a vector of layouts when binding
     let mut descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>> = Vec::new();
-    let mut descriptor_sets: HashMap<ShaderStage, BTreeMap<u32, DescriptorSetWithOffsets>> =
-        HashMap::new();
+    descriptor_set_layouts.push(descriptor_set_with_data.layout.clone());
 
-    for (stage, set) in &sets {
-        let mut current_descriptor_set_bindings: BTreeMap<u32, DescriptorSetWithOffsets> =
-            BTreeMap::new();
-        for (binding, set_layout) in set {
-            // Data needs to have a known size
-            let data: [u8; STORAGE_BUFFER_MAX_SIZE] = pad(set_layout.data);
+    // We need to store each binding in their own buffers as they get pushed to the GPU seperately
+    let mut host_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
+    let mut device_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
 
-            // Copy descriptor data into a buffer located in host memory
-            // This will get copied over to device memory later
-            let host_buffer = Buffer::from_data(
-                host_buffer_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                data,
-            )
-            .unwrap();
+    let mut descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets> = BTreeMap::new();
 
-            // Create a target memory buffer on the device to copy our descriptor set to
-            let device_buffer: Subbuffer<[u8; STORAGE_BUFFER_MAX_SIZE]> = Buffer::new_sized(
-                device_buffer_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+    // Match each descriptor set layout binding with the data we have for each binding
+    let num_bindings = descriptor_set_with_data.layout.bindings().len();
+    for binding in 0..num_bindings {
+        // Create a host visible buffer with the data we have for this binding
+        let host_buffer = Buffer::from_data(
+            host_buffer_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            *descriptor_set_with_data.data.get(&(binding as u32)).unwrap(),
+        )
+        .unwrap();
 
-            // Define our descriptor set
-            // This is binds our descriptor layout to the region in device memory the data will end up
-            // (I think)
-            let descriptor_set = DescriptorSet::new_variable(
-                descriptor_set_allocator.clone(),
-                set_layout.layout.clone(),
-                set_layout.layout.variable_descriptor_count(),
-                vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
-                vec![],
-            )
-            .unwrap();
-            current_descriptor_set_bindings.insert(
-                *binding,
-                DescriptorSetWithOffsets::new(descriptor_set.clone(), []),
-            );
+        // Create a device visible buffer with capacity for our max buffer size
+        let device_buffer: Subbuffer<[u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> = Buffer::new_sized(
+            device_buffer_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-            host_buffers.push(host_buffer.clone());
-            device_buffers.push(device_buffer.clone());
-            descriptor_set_layouts.push(set.get(&binding).unwrap().layout.clone());
-        }
-        descriptor_sets.insert(*stage, current_descriptor_set_bindings);
+        let descriptor_set = DescriptorSet::new_variable(
+            descriptor_set_allocator.clone(),
+            descriptor_set_with_data.clone().layout,
+            descriptor_set_with_data.clone().layout.variable_descriptor_count(),
+            vec![WriteDescriptorSet::buffer(0, device_buffer.clone())],
+            vec![],
+        )
+        .unwrap();
+
+        descriptor_sets.insert(
+            binding as u32,
+            DescriptorSetWithOffsets::new(descriptor_set.clone(), []),
+        );
+        host_buffers.insert(binding as u32, host_buffer);
+        device_buffers.insert(binding as u32, device_buffer);
     }
 
     // Create a pipeline to copy our data from the host to the device
@@ -498,33 +492,23 @@ fn push_descriptor_sets(
         vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
     )
     .unwrap();
-    for i in 0..host_buffers.len() {
+
+    // Copy buffer for each binding
+    for (binding, host_buffer) in host_buffers.pop_first() {
         cbb.copy_buffer(vulkano::command_buffer::CopyBufferInfo::buffers(
-            host_buffers[i].clone(),
-            device_buffers[i].clone(),
+            host_buffer,
+            device_buffers.pop_first().unwrap().1, // TODO: This looks wrong
         ))
         .unwrap();
+        cbb.bind_descriptor_sets(
+            vulkano::pipeline::PipelineBindPoint::Graphics,
+            pipeline_layout.clone(),
+            0,
+            descriptor_sets.get(&binding).unwrap().clone(),
+        )
+        .unwrap();
     }
-    cbb.bind_descriptor_sets(
-        vulkano::pipeline::PipelineBindPoint::Graphics,
-        pipeline_layout.clone(),
-        0,
-        (
-            descriptor_sets
-                .get(&ShaderStage::Vertex)
-                .unwrap()
-                .get(&0)
-                .unwrap()
-                .clone(),
-            descriptor_sets
-                .get(&ShaderStage::Fragment)
-                .unwrap()
-                .get(&0)
-                .unwrap()
-                .clone(),
-        ),
-    )
-    .unwrap();
+
     let cb = cbb.build().unwrap();
 
     // Command buffer finished, execute

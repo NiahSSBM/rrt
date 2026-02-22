@@ -2,7 +2,7 @@
 
 layout(location = 0) in vec4 fragColor;
 layout(location = 0) out vec4 f_color;
-layout(binding = 0) buffer colorOffset {
+layout(binding = 1) buffer colorOffset {
     float offset;
 };
 
