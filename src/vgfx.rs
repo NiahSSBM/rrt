@@ -493,22 +493,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
                         0,
-                        (
-                            mesh.shader
-                                .descriptor_sets
-                                .get(&ShaderStage::Vertex)
-                                .unwrap()
-                                .get(&0)
-                                .unwrap()
-                                .clone(),
-                            mesh.shader
-                                .descriptor_sets
-                                .get(&ShaderStage::Fragment)
-                                .unwrap()
-                                .get(&0)
-                                .unwrap()
-                                .clone(),
-                        ),
+                        mesh.shader.descriptor_sets.get(&0).unwrap().clone(),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 

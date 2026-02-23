@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
+use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -142,7 +143,7 @@ fn main() {
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
     // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing wayland
     let event_loop = EventLoop::builder()
-        .with_wayland()
+        .with_x11()
         .build()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
