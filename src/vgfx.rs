@@ -39,6 +39,7 @@ use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::shader::ShaderStage;
 use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -390,12 +391,14 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
     for mesh in &mut window_context.meshes {
         let vs = mesh
-            .shaders
-            .get_entry(ExecutionModel::Vertex)
+            .shader
+            .stage_entries
+            .get(&ShaderStage::Vertex)
             .expect("Error: No vertex shader found!");
         let fs = mesh
-            .shaders
-            .get_entry(ExecutionModel::Fragment)
+            .shader
+            .stage_entries
+            .get(&ShaderStage::Fragment)
             .expect("Error: No fragment shader found!");
 
         let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
@@ -427,10 +430,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                 )),
                 subpass: Some(subpass.into()),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
-                // There should only be 1 pipeline, all stages are included in the pipeline
-                ..GraphicsPipelineCreateInfo::layout(
-                    mesh.shaders.get_pipelines()[0].clone(),
-                )
+                ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
             },
         )
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
@@ -483,6 +483,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 let vertex_buffer_slice = vertex_buffer
                     .clone()
                     .slice((3 * i) as u64..(3 * (i + 1)) as u64);
+
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
@@ -492,7 +493,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
                         0,
-                        mesh.shaders.get_descriptor_sets(),
+                        mesh.shader.descriptor_sets.get(&0).unwrap().clone(),
                     )
                     .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
 
