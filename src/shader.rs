@@ -1,6 +1,5 @@
-use bytemuck::{bytes_of, try_cast_slice};
+use bytemuck::{bytes_of};
 use color::{AlphaColor, Srgb};
-use core::num;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
@@ -9,7 +8,7 @@ use std::{
 };
 use vulkano::{
     Validated, VulkanError,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, PrimaryCommandBufferAbstract,
         allocator::StandardCommandBufferAllocator,
@@ -27,7 +26,7 @@ use vulkano::{
         AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
     },
     pipeline::PipelineLayout,
-    shader::{EntryPoint, ShaderStage, ShaderStages, spirv::ExecutionModel},
+    shader::{EntryPoint, ShaderStage, ShaderStages},
     sync::GpuFuture,
 };
 
@@ -68,9 +67,9 @@ impl Vertex2D {
 
 #[derive(Clone)]
 pub struct Shader {
-    stage_pipeline: HashMap<ShaderStage, ShaderType>,
+    pub stage_pipeline: HashMap<ShaderStage, ShaderType>,
     pub stage_entries: HashMap<ShaderStage, EntryPoint>,
-    queue: Arc<Queue>,
+    pub queue: Arc<Queue>,
     pub pipeline_layout: Option<Arc<PipelineLayout>>,
     pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
@@ -92,20 +91,21 @@ struct VGFXDescriptorSetLayoutWithData {
     data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]>,
 }
 
-#[derive(Clone)]
-struct ShaderLoadData {
-    entry: EntryPoint,
-    binding: u32,
-    data: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE],
+// Takes an array of bytes and returns a sized array of max binding size
+fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
+    let mut out: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] = [0; STORAGE_BUFFER_BINDING_MAX_SIZE];
+    for (i, byte) in data.iter().enumerate() {
+        out[i] = *byte;
+    }
+    out
 }
 
 impl Shader {
-    // Create allocators that shaders will be loaded with later
-    // These allocators are used for the lifetime of the Shaders struct
+    // TODO: Verify requested stages are compatible with each other
+    // eg: no duplicates and vertex stage is present
     pub fn new(stage_pipeline: HashMap<ShaderStage, ShaderType>, queue: Arc<Queue>) -> Self {
-        // TODO: Verify requested stages are compatible with each other
-        // eg: no duplicates and vertex stage is present
-
+        // Start with the values we have now
+        // TODO: Re-use these allocators so they don't get re-created every time we make a new shader
         let shader = Self {
             stage_pipeline,
             stage_entries: HashMap::new(),
@@ -128,86 +128,93 @@ impl Shader {
             )),
         };
 
+        // Shader::load() populates the rest
         shader.load()
     }
 
-    // TODO: Return an actual error when a shader isn't found
-    // Each shader is matched to descriptor set input data
+    // This is where the data inputs for each shader are defined
+    // Data is seperated by bindings. If we put something in binding 0 for a specific shader, 
+    // other shaders can access that binding. So we need to make sure we don't overlap bindings, 
+    // each type of data should have it's own binding
+    //
     // For each new shader, a new match leaf is required
     fn load(&self) -> Self {
         let mut binding_data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> =
             BTreeMap::new();
         let mut stage_entries: HashMap<ShaderStage, EntryPoint> = HashMap::new();
 
-        let temp_color_data = vs_default::vColor {
-            colors: [
-                [1.0, 0.0, 0.0, 1.0].into(),
-                [0.0, 1.0, 0.0, 1.0].into(),
-                [0.0, 0.0, 1.0, 1.0].into(),
-            ],
-        };
-        let temp_offset_data = fs_default::colorOffset {
-            offset: -0.5,
-            dummy1: 0.0,
-            dummy2: 0.0,
-            dummy3: 0.0,
-        };
-
         for (s_stage, s_type) in self.stage_pipeline.clone() {
-            println!("Shader stage: {:?}", s_stage);
-            let load_data = match s_type {
-                ShaderType::VertexDefault => ShaderLoadData {
-                    entry: vs_default::load(self.queue.device().clone())
+            let entry: EntryPoint;
+            let binding: u32;
+            let data: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE];
+
+            (entry, binding, data) = match s_type {
+                ShaderType::VertexDefault => (
+                    vs_default::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 0,
-                    data: pad(bytes_of(&temp_color_data)),
-                },
-                ShaderType::VertexCustom => ShaderLoadData {
-                    entry: vs_custom::load(self.queue.device().clone())
+                    0,
+                    pad(bytes_of(&vs_default::vColor {
+                        colors: [
+                            [1.0, 0.0, 0.0, 1.0].into(),
+                            [0.0, 1.0, 0.0, 1.0].into(),
+                            [0.0, 0.0, 1.0, 1.0].into(),
+                        ],
+                    })),
+                ),
+                ShaderType::VertexCustom => (
+                    vs_custom::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 0,
-                    data: pad(bytes_of(&temp_color_data)),
-                },
-                ShaderType::VertexWireframe => ShaderLoadData {
-                    entry: vs_wireframe::load(self.queue.device().clone())
+                    0,
+                    pad(bytes_of(&vs_default::vColor {
+                        colors: [
+                            [1.0, 0.0, 0.0, 1.0].into(),
+                            [0.0, 1.0, 0.0, 1.0].into(),
+                            [0.0, 0.0, 1.0, 1.0].into(),
+                        ],
+                    })),
+                ),
+                ShaderType::VertexWireframe => (
+                    vs_wireframe::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 0,
-                    data: pad(bytes_of::<[u8; 0]>(&[])),
-                },
-                ShaderType::FragmentDefault => ShaderLoadData {
-                    entry: fs_default::load(self.queue.device().clone())
+                    0,
+                    pad(bytes_of::<[u8; 0]>(&[])),
+                ),
+                ShaderType::FragmentDefault => (
+                    fs_default::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 1,
-                    data: pad(bytes_of(&temp_offset_data)),
-                },
-                ShaderType::FragmentWireframe => ShaderLoadData {
-                    entry: fs_wireframe::load(self.queue.device().clone())
+                    1,
+                    pad(bytes_of(&fs_default::colorOffset {
+                        offset: -0.5,
+                    })),
+                ),
+                ShaderType::FragmentCustom => (
+                    fs_wireframe::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 0,
-                    data: pad(bytes_of::<[u8; 0]>(&[])),
-                },
-                ShaderType::FragmentCustom => ShaderLoadData {
-                    entry: fs_custom::load(self.queue.device().clone())
+                    0,
+                    pad(bytes_of::<[u8; 0]>(&[])),
+                ),
+                ShaderType::FragmentWireframe => (
+                    fs_custom::load(self.queue.device().clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    binding: 0,
-                    data: pad(bytes_of::<[u8; 0]>(&[])),
-                },
+                    0,
+                    pad(bytes_of::<[u8; 0]>(&[])),
+                ),
             };
 
-            stage_entries.insert(s_stage, load_data.entry.clone());
-            binding_data.insert(load_data.binding, load_data.data);
+            stage_entries.insert(s_stage, entry.clone());
+            binding_data.insert(binding, data);
         }
 
         let (descriptor_sets, pipeline_layout) =
@@ -221,14 +228,13 @@ impl Shader {
         }
     }
 
-    // This takes some data and an input shader and puts them together on the GPU
-    // Returning what needs to be attached to the shader so it can be fully rendered
+    // This function is split off from Shader::load() because
+    // it's an implemtation detail that shouldn't be worred about when adding new shaders
     fn load_internal(
         &self,
         queue: Arc<Queue>,
         binding_data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]>,
     ) -> (BTreeMap<u32, DescriptorSetWithOffsets>, Arc<PipelineLayout>) {
-        // Layouts for each stage go in a HashMap. Each layout can have multiple bindings, which go in a BTreeMap
         let mut descriptor_set_layout_create_info: BTreeMap<u32, VGFXDescriptorSetLayout> =
             BTreeMap::new();
         for (binding, _) in &binding_data {
@@ -250,8 +256,6 @@ impl Shader {
             data: binding_data,
         };
 
-        // TODO: Find a way to use this function to put every shader on the mesh into the same pipeline
-        // Currently we're creating a whole pipeline with duplicate descriptor sets for each shader
         let (pipeline_layout, descriptor_sets) = push_descriptor_set(
             descriptor_layouts_with_data,
             self.host_buffer_allocator.clone(),
@@ -266,7 +270,6 @@ impl Shader {
 }
 
 // To create a descriptor set layout we need:
-// - The pipeline stages the descriptor set is intended for (Vertex, Fragment, All, etc...)
 // - The descriptor type (StorageBuffer, StorageImage, etc...) for each descriptor
 // - The descriptor count for each descriptor.
 //      This one is a little confusing. A descriptor can contain either describe a single "block" of data, or an array of blocks of data.
@@ -300,14 +303,6 @@ fn create_descriptor_set_layout(
     DescriptorSetLayout::new(device.clone(), create_info)
 }
 
-fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
-    let mut out: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] = [0; STORAGE_BUFFER_BINDING_MAX_SIZE];
-    for (i, byte) in data.iter().enumerate() {
-        out[i] = *byte;
-    }
-    out
-}
-
 // This function combines a descriptor set layout and associated data, sends it to the GPU, and returns the descriptor set in GPU memory
 // We need:
 // - A descriptor set layout. create_descriptor_set_layout() does this
@@ -334,9 +329,8 @@ fn push_descriptor_set(
     let mut descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets> = BTreeMap::new();
     let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::new();
 
-    // Match each descriptor set layout binding with the data we have for each binding
-    let num_bindings = descriptor_set_with_data.layout.bindings().len() as u32;
-    for binding in 0..num_bindings {
+    // Match each descriptor set layout binding with the data we have for each binding =
+    for (binding, _) in descriptor_set_with_data.layout.bindings() {
         // Create a host visible buffer with the data we have for this binding
         let host_buffer = Buffer::from_data(
             host_buffer_allocator.clone(),
@@ -349,7 +343,7 @@ fn push_descriptor_set(
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            *descriptor_set_with_data.data.get(&binding).unwrap(),
+            *descriptor_set_with_data.data.get(binding).unwrap(),
         )
         .unwrap();
 
@@ -367,10 +361,10 @@ fn push_descriptor_set(
         )
         .unwrap();
 
-        descriptor_writes.push(WriteDescriptorSet::buffer(binding, device_buffer.clone()));
+        descriptor_writes.push(WriteDescriptorSet::buffer(*binding, device_buffer.clone()));
 
-        host_buffers.insert(binding, host_buffer);
-        device_buffers.insert(binding, device_buffer);
+        host_buffers.insert(*binding, host_buffer);
+        device_buffers.insert(*binding, device_buffer);
     }
 
     let descriptor_set = DescriptorSet::new_variable(
@@ -385,10 +379,7 @@ fn push_descriptor_set(
     )
     .unwrap();
 
-    descriptor_sets.insert(
-        0,
-        DescriptorSetWithOffsets::new(descriptor_set.clone(), []),
-    );
+    descriptor_sets.insert(0, DescriptorSetWithOffsets::new(descriptor_set.clone(), []));
 
     // Create a pipeline to copy our data from the host to the device
     let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
