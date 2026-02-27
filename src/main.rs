@@ -50,9 +50,6 @@ impl ApplicationHandler for App {
             let game_data = GameData {
                 to_render,
                 render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
-                //available_shaders: Shaders::new(
-                //    self.window_contexts[i].queues.clone().unwrap()[0].clone(),
-                //),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             thread::spawn(|| {

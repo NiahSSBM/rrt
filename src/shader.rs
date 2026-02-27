@@ -1,5 +1,6 @@
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
+use nalgebra::{Matrix, Matrix4, Point3, Vector, Vector3};
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
@@ -153,8 +154,8 @@ impl Shader {
     }
 
     // This is where the data inputs for each shader are defined
-    // Data is seperated by bindings. If we put something in binding 0 for a specific shader, 
-    // other shaders can access that binding. So we need to make sure we don't overlap bindings, 
+    // Data is seperated by bindings. If we put something in binding 0 for a specific shader,
+    // other shaders can access that binding. So we need to make sure we don't overlap bindings,
     // each type of data should have it's own binding
     //
     // For each new shader, a new match leaf is required
@@ -175,12 +176,22 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of(&vs_default::vColor {
+                    pad(bytes_of(&vs_default::vInput {
                         colors: [
                             [1.0, 0.0, 0.0, 1.0].into(),
                             [0.0, 1.0, 0.0, 1.0].into(),
                             [0.0, 0.0, 1.0, 1.0].into(),
                         ],
+                        mvp: vs_default::MVPBuffer {
+                            model: Matrix4::new_rotation(Vector3::new(1.0, 0.8, 0.5)).into(),
+                            view: Matrix4::look_at_rh(
+                                &Point3::new(2.0, 2.0, 2.0),
+                                &Point3::new(0.0, 0.0, 0.0),
+                                &Vector3::new(0.0, 0.0, 1.0),
+                            )
+                            .into(),
+                            proj: Matrix4::new_perspective(0.5, 800.0/600.0, 0.1, 10.0).into(),
+                        },
                     })),
                 ),
                 ShaderType::VertexCustom => (
@@ -189,12 +200,29 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of(&vs_default::vColor {
+                    pad(bytes_of(&vs_default::vInput {
                         colors: [
                             [1.0, 0.0, 0.0, 1.0].into(),
                             [0.0, 1.0, 0.0, 1.0].into(),
                             [0.0, 0.0, 1.0, 1.0].into(),
                         ],
+                        mvp: vs_default::MVPBuffer {
+                            model: Matrix4::new(
+                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                                1.0, 1.0, 1.0,
+                            )
+                            .into(),
+                            view: Matrix4::new(
+                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                                1.0, 1.0, 1.0,
+                            )
+                            .into(),
+                            proj: Matrix4::new(
+                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                                1.0, 1.0, 1.0,
+                            )
+                            .into(),
+                        },
                     })),
                 ),
                 ShaderType::VertexWireframe => (
@@ -211,9 +239,7 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     1,
-                    pad(bytes_of(&fs_default::colorOffset {
-                        offset: -0.5,
-                    })),
+                    pad(bytes_of(&fs_default::colorOffset { offset: -0.5 })),
                 ),
                 ShaderType::FragmentCustom => (
                     fs_wireframe::load(self.queue.device().clone())

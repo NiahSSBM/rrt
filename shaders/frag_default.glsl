@@ -7,5 +7,5 @@ layout(binding = 1) buffer colorOffset {
 };
 
 void main() {
-    f_color = vec4(fragColor + offset);
+    f_color = vec4(fragColor);
 }
