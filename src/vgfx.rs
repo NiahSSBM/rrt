@@ -53,8 +53,8 @@ use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::Window;
 
 use crate::game::RenderEvent;
-use crate::mesh::{Mesh, combine_verticies};
-use crate::shader::Vertex2D;
+use crate::mesh::{Mesh2D, Mesh3D, combine_verticies};
+use crate::shader::{Vertex2D, Vertex3D};
 
 #[derive(Default, PartialEq)]
 pub enum Platform {
@@ -80,13 +80,13 @@ pub struct WindowContext {
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
-    vertex_buffer: Option<Subbuffer<[Vertex2D]>>,
+    vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     surface: Option<Arc<Surface>>,
     images: Option<Vec<Arc<Image>>>,
     render_pass: Option<Arc<RenderPass>>,
-    meshes: Vec<Mesh>,
+    meshes: Vec<Mesh3D>,
     previous_fence_i: u32,
     pub should_resize: bool,
     pub requested_resize: bool,
@@ -126,7 +126,7 @@ impl WindowContext {
         }
     }
 
-    pub fn add_mesh(&mut self, mesh: Mesh) -> Result<&mut Self, TryReserveError> {
+    pub fn add_mesh(&mut self, mesh: Mesh3D) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
         self.meshes.push(mesh);
 
@@ -401,7 +401,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
             .get(&ShaderStage::Fragment)
             .expect("Error: No fragment shader found!");
 
-        let vertex_input_state = Vertex2D::per_vertex().definition(&vs).unwrap();
+        let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
 
         let stages = [
             PipelineShaderStageCreateInfo::new(vs.clone()),
@@ -700,7 +700,7 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
 
     // Buffer::from_iter will panic if there's no verticies, so we'll make one vertex if there isn't one
     if verticies.is_empty() {
-        verticies.push(Vertex2D::new([0.0, 0.0], AlphaColor::WHITE));
+        verticies.push(Vertex3D::new([0.0, 0.0, 0.0], AlphaColor::WHITE));
     }
     let vertex_buffer = Buffer::from_iter(
         window_context
