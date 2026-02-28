@@ -1,6 +1,6 @@
 use std::collections::TryReserveError;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
 use std::sync::mpsc::Receiver;
@@ -86,7 +86,7 @@ pub struct WindowContext {
     surface: Option<Arc<Surface>>,
     images: Option<Vec<Arc<Image>>>,
     render_pass: Option<Arc<RenderPass>>,
-    meshes: Vec<Mesh3D>,
+    meshes: Vec<Arc<Mutex<Mesh3D>>>,
     previous_fence_i: u32,
     pub should_resize: bool,
     pub requested_resize: bool,
@@ -126,7 +126,7 @@ impl WindowContext {
         }
     }
 
-    pub fn add_mesh(&mut self, mesh: Mesh3D) -> Result<&mut Self, TryReserveError> {
+    pub fn add_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
         self.meshes.push(mesh);
 
@@ -389,7 +389,8 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
         println!("Warning: No meshes to load!");
     }
 
-    for mesh in &mut window_context.meshes {
+    for mesh_mutex in &window_context.meshes {
+        let mesh = mesh_mutex.lock().unwrap();
         let vs = mesh
             .shader
             .stage_entries
@@ -479,7 +480,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
 
             // Bind the shader pipeline, verticies, and descriptor sets for each mesh
             // Currently this assumes each mesh is only 1 tri
-            for (i, mesh) in window_context.meshes.iter().enumerate() {
+            for (i, mesh_mutex) in window_context.meshes.iter().enumerate() {
+                let mesh = mesh_mutex.lock().unwrap();
                 let vertex_buffer_slice = vertex_buffer
                     .clone()
                     .slice((3 * i) as u64..(3 * (i + 1)) as u64);
@@ -694,7 +696,8 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
 
     // Put all verticies in all meshes in the vertex buffer
     let mut verticies = vec![];
-    for mesh in &window_context.meshes {
+    for mesh_mutex in &window_context.meshes {
+        let mesh = mesh_mutex.lock().unwrap();
         verticies = combine_verticies(vec![verticies, mesh.verticies.clone()])
     }
 

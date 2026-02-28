@@ -18,8 +18,8 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::update_vertex_buffer;
 use crate::vgfx::Platform;
+use crate::vgfx::update_vertex_buffer;
 
 #[derive(Default)]
 struct App {
@@ -83,10 +83,12 @@ impl ApplicationHandler for App {
                             .try_recv();
                         match event {
                             Ok(e) => match e {
-                                // Right now the only thing the game thread sending over is meshes to add
                                 RenderEvent::AddMesh(mesh) => {
                                     println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
+                                    should_update_buffers = true;
+                                }
+                                RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
                                 }
                             },
