@@ -4,6 +4,8 @@ use nalgebra::{Matrix, Matrix4, Point3, Vector, Vector3};
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
+    mem::discriminant,
+    ops::Add,
     sync::Arc,
     vec,
 };
@@ -44,6 +46,22 @@ pub enum ShaderType {
     FragmentDefault,
     FragmentCustom,
     FragmentWireframe,
+}
+
+#[derive(Clone)]
+pub enum AdditionalShaderProperties {
+    // Model, View, Projection
+    Perspective([[f32; 4]; 4], [[f32; 4]; 4], [[f32; 4]; 4]),
+}
+
+impl AdditionalShaderProperties {
+    fn perspective_default() -> Self {
+        return Self::Perspective(
+            Matrix4::identity().into(),
+            Matrix4::identity().into(),
+            Matrix4::identity().into(),
+        );
+    }
 }
 
 #[derive(
@@ -93,6 +111,7 @@ pub struct Shader {
     pub queue: Arc<Queue>,
     pub pipeline_layout: Option<Arc<PipelineLayout>>,
     pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
+    pub additional_properties: Vec<AdditionalShaderProperties>,
     host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
@@ -121,10 +140,26 @@ fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
     out
 }
 
+fn get_shader_property(
+    property: AdditionalShaderProperties,
+    properties: &Vec<AdditionalShaderProperties>,
+) -> Option<&AdditionalShaderProperties> {
+    for potential in properties {
+        if std::mem::discriminant(potential) == std::mem::discriminant(&property) {
+            return Some(potential);
+        }
+    }
+    return None;
+}
+
 impl Shader {
     // TODO: Verify requested stages are compatible with each other
     // eg: no duplicates and vertex stage is present
-    pub fn new(stage_pipeline: HashMap<ShaderStage, ShaderType>, queue: Arc<Queue>) -> Self {
+    pub fn new(
+        stage_pipeline: HashMap<ShaderStage, ShaderType>,
+        additional_properties: Vec<AdditionalShaderProperties>,
+        queue: Arc<Queue>,
+    ) -> Self {
         // Start with the values we have now
         // TODO: Re-use these allocators so they don't get re-created every time we make a new shader
         let shader = Self {
@@ -133,6 +168,7 @@ impl Shader {
             queue: queue.clone(),
             pipeline_layout: None,
             descriptor_sets: BTreeMap::new(),
+            additional_properties,
             host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
                 queue.device().clone(),
             )),
@@ -170,30 +206,38 @@ impl Shader {
             let data: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE];
 
             (entry, binding, data) = match s_type {
-                ShaderType::VertexDefault => (
-                    vs_default::load(self.queue.device().clone())
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    0,
-                    pad(bytes_of(&vs_default::vInput {
-                        colors: [
-                            [1.0, 0.0, 0.0, 1.0].into(),
-                            [0.0, 1.0, 0.0, 1.0].into(),
-                            [0.0, 0.0, 1.0, 1.0].into(),
-                        ],
-                        mvp: vs_default::MVPBuffer {
-                            model: Matrix4::new_rotation(Vector3::new(1.0, 0.8, 0.5)).into(),
-                            view: Matrix4::look_at_rh(
-                                &Point3::new(2.0, 2.0, 2.0),
-                                &Point3::new(0.0, 0.0, 0.0),
-                                &Vector3::new(0.0, 0.0, 1.0),
-                            )
-                            .into(),
-                            proj: Matrix4::new_perspective(0.5, 800.0/600.0, 0.1, 10.0).into(),
-                        },
-                    })),
-                ),
+                ShaderType::VertexDefault => {
+                    let perspective = get_shader_property(
+                        AdditionalShaderProperties::perspective_default(),
+                        &self.additional_properties,
+                    )
+                    .expect("No perspective property on shader that requires perspective!");
+                    (
+                        vs_default::load(self.queue.device().clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        0,
+                        pad(bytes_of(&vs_default::vInput {
+                            colors: [
+                                [1.0, 0.0, 0.0, 1.0].into(),
+                                [0.0, 1.0, 0.0, 1.0].into(),
+                                [0.0, 0.0, 1.0, 1.0].into(),
+                            ],
+                            mvp: {
+                                match perspective {
+                                    AdditionalShaderProperties::Perspective(model, view, proj) => {
+                                        vs_default::MVPBuffer {
+                                            model: *model,
+                                            view: *view,
+                                            proj: *proj,
+                                        }
+                                    }
+                                }
+                            },
+                        })),
+                    )
+                }
                 ShaderType::VertexCustom => (
                     vs_custom::load(self.queue.device().clone())
                         .unwrap()
