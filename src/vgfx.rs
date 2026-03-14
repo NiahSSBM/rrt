@@ -484,7 +484,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 let mesh = mesh_mutex.lock().unwrap();
                 let vertex_buffer_slice = vertex_buffer
                     .clone()
-                    .slice((3 * i) as u64..(3 * (i + 1)) as u64);
+                    .slice((12 * i) as u64..(12 * (i + 1)) as u64);
 
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())

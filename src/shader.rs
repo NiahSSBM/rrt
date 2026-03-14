@@ -140,12 +140,14 @@ fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
     out
 }
 
+// This searches the vec of properties provided and returns the first of the same type of the desired property
+// desired_property can contain any data, only the type of the data is relevent
 fn get_shader_property(
-    property: AdditionalShaderProperties,
+    desired_property: AdditionalShaderProperties,
     properties: &Vec<AdditionalShaderProperties>,
 ) -> Option<&AdditionalShaderProperties> {
     for potential in properties {
-        if std::mem::discriminant(potential) == std::mem::discriminant(&property) {
+        if std::mem::discriminant(potential) == std::mem::discriminant(&desired_property) {
             return Some(potential);
         }
     }
@@ -357,6 +359,12 @@ impl Shader {
 
         (descriptor_sets, pipeline_layout)
     }
+
+    // This is temporarily very simple to test what it takes to update descriptor data
+    // This is for updating the perspective matrix
+    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
+        self.additional_properties = vec![shader_property];
+    }
 }
 
 // To create a descriptor set layout we need:
@@ -493,7 +501,6 @@ fn push_descriptor_set(
 
     // Copy buffer for each binding
     for (binding, host_buffer) in host_buffers {
-        println!("Host Buffer: {:?}", host_buffer.read());
         cbb.copy_buffer(vulkano::command_buffer::CopyBufferInfo::buffers(
             host_buffer,
             device_buffers.get(&binding).unwrap().clone(),

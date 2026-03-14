@@ -15,5 +15,5 @@ layout(binding = 0) buffer vInput {
 
 void main() {
     gl_Position = mvp.proj * mvp.view * mvp.model * vec4(position, 1.0);
-    fragColor = colors[gl_VertexIndex];
+    fragColor = colors[gl_VertexIndex % 3];
 }
