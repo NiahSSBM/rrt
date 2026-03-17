@@ -3,7 +3,7 @@ mod mesh;
 pub mod shader;
 mod vgfx;
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use vgfx::WindowContext;
@@ -20,6 +20,9 @@ use winit::{
 use crate::game::{GameData, RenderEvent};
 use crate::vgfx::Platform;
 use crate::vgfx::update_vertex_buffer;
+
+static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
+static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
 
 #[derive(Default)]
 struct App {
@@ -73,6 +76,30 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
+                        // Calculate framerate
+                        let fs_lock = FRAMES_SINCE_LAST_FRAMETIME_UPDATE.try_lock();
+                        match fs_lock {
+                            Ok(mut fs_mg) => {
+                                let frametime_update_lock =
+                                    TIME_SINCE_LAST_FRAMETIME_UPDATE.try_lock();
+                                match frametime_update_lock {
+                                    Ok(mut frametime_update_mg) => {
+                                        if frametime_update_mg.is_none() {
+                                            *frametime_update_mg = Some(Instant::now());
+                                        }
+                                        if frametime_update_mg.unwrap().elapsed() > Duration::from_secs(1) {
+                                            println!("{} FPS", *fs_mg);
+                                            *fs_mg = 0;
+                                            *frametime_update_mg = Some(Instant::now());
+                                        }
+                                    }
+                                    Err(_) => (),
+                                }
+                                *fs_mg += 1;
+                            }
+                            Err(_) => (),
+                        }
+
                         let mut should_update_buffers = false;
 
                         // Get one event sent from game thread
