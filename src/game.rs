@@ -97,14 +97,15 @@ pub fn game_main(data: GameData) {
             Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
         );
 
-        //meshes[0].lock().unwrap().shader.update_descriptor(perspective);
-        tri_shaders = Shader::new(
-            stage_pipeline.clone(),
-            vec![perspective],
-            data.render_queue.clone(),
-        );
+        tri_shaders = meshes[0].lock().unwrap().shader.update_descriptor(perspective);
+        //tri_shaders = Shader::new(
+        //    stage_pipeline.clone(),
+        //    vec![perspective],
+        //    data.render_queue.clone(),
+        //);
 
         meshes[0].lock().unwrap().shader = tri_shaders;
+        thread::sleep(Duration::from_millis(16));
         data.to_render
             .send(RenderEvent::UpdateVertexBuffer)
             .expect("Failed to request vertex buffer update!");

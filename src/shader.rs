@@ -362,8 +362,9 @@ impl Shader {
 
     // This is temporarily very simple to test what it takes to update descriptor data
     // This is for updating the perspective matrix
-    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
+    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) -> Self{
         self.additional_properties = vec![shader_property];
+        self.load()
     }
 }
 
