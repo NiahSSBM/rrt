@@ -3,7 +3,7 @@ use std::collections::TryReserveError;
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
@@ -52,7 +52,7 @@ use winit::event_loop::EventLoop;
 use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::Window;
 
-use crate::game::RenderEvent;
+use crate::game::{GameData, GameEvent, RenderEvent};
 use crate::mesh::{Mesh2D, Mesh3D, combine_verticies};
 use crate::shader::{Vertex2D, Vertex3D};
 
@@ -94,6 +94,7 @@ pub struct WindowContext {
     pub recreate_swapchain: bool,
     viewport: Viewport,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
+    pub game_thread_sender: Option<Sender<GameEvent>>,
     pub platform: Platform,
 }
 

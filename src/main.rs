@@ -50,11 +50,14 @@ impl ApplicationHandler for App {
             init_vulkano(&mut self.window_contexts[i]);
 
             let (to_render, from_game) = mpsc::channel();
+            let (to_game, from_render) = mpsc::channel();
             let game_data = GameData {
                 to_render,
+                from_render,
                 render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
+            self.window_contexts[i].game_thread_sender = Some(to_game);
             thread::spawn(|| {
                 game::game_main(game_data);
             });
@@ -73,6 +76,10 @@ impl ApplicationHandler for App {
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("The close button was pressed; stopping");
+                        match window_context.game_thread_sender.as_ref().unwrap().send(game::GameEvent::GameClose) {
+                            Ok(_) => (),
+                            Err(err) => println!("Failed to send game close event to render thread, closing anyway... {:?}", err),
+                        };
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {

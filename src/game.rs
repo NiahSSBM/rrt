@@ -27,8 +27,13 @@ pub enum RenderEvent {
     UpdateVertexBuffer,
 }
 
+pub enum GameEvent {
+    GameClose,
+}
+
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
+    pub from_render: mpsc::Receiver<GameEvent>,
     pub render_queue: Arc<Queue>,
 }
 
@@ -55,23 +60,22 @@ pub fn game_main(data: GameData) {
         Vertex3D::new([0.0, 1.0, 0.0], css::RED),
         Vertex3D::new([1.0, -1.0, 1.0], css::BLUE),
         Vertex3D::new([1.0, -1.0, -1.0], css::GREEN),
-
     ];
     let mut perspective = AdditionalShaderProperties::Perspective(
-            Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
-            Matrix4::look_at_rh(
-                &Point3::new(2.0, 0.0,  0.0), // Where the camera is
-                &Point3::new(0.0, 0.0, 0.0), // Where the camera looks
-                &Vector3::new(0.0, 1.0, 0.0), // What axis is up
-            )
-            .into(),
-            Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
-        );
+        Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
+        Matrix4::look_at_rh(
+            &Point3::new(2.0, 0.0, 0.0),  // Where the camera is
+            &Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
+            &Vector3::new(0.0, 1.0, 0.0), // What axis is up
+        )
+        .into(),
+        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+    );
     let mut tri_shaders = Shader::new(
-            stage_pipeline.clone(),
-            vec![perspective],
-            data.render_queue.clone(),
-        );
+        stage_pipeline.clone(),
+        vec![perspective],
+        data.render_queue.clone(),
+    );
 
     let mut meshes = vec![];
     let mesh = Arc::new(Mutex::new(Mesh3D::new(tri_verts.clone(), tri_shaders)));
@@ -84,20 +88,35 @@ pub fn game_main(data: GameData) {
 
     let mut view_offset: f32 = 0.0;
     loop {
+        // First check if the main thread is telling us to exit
+        match data.from_render.try_recv() {
+            Ok(event) => match event {
+                GameEvent::GameClose => {
+                    println!("Game thread exiting...");
+                    break;
+                }
+            },
+            Err(_) => {}
+        }
+
         //vert_offsets += 0.01;
         view_offset += 0.1;
         perspective = AdditionalShaderProperties::Perspective(
             Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
             Matrix4::look_at_rh(
-                &Point3::new(3.0 * view_offset.sin(), 0.0 , view_offset.cos() * 3.0), // Where the camera is
-                &Point3::new(0.0, 0.0, 0.0), // Where the camera looks
+                &Point3::new(3.0 * view_offset.sin(), 0.0, view_offset.cos() * 3.0), // Where the camera is
+                &Point3::new(0.0, 0.0, 0.0),   // Where the camera looks
                 &Vector3::new(0.0, -1.0, 0.0), // What axis is up
             )
             .into(),
             Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
         );
 
-        tri_shaders = meshes[0].lock().unwrap().shader.update_descriptor(perspective);
+        tri_shaders = meshes[0]
+            .lock()
+            .unwrap()
+            .shader
+            .update_descriptor(perspective);
         //tri_shaders = Shader::new(
         //    stage_pipeline.clone(),
         //    vec![perspective],
