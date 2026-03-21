@@ -480,12 +480,11 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
 
             // Bind the shader pipeline, verticies, and descriptor sets for each mesh
-            // Currently this assumes each mesh is only 1 tri
             for (i, mesh_mutex) in window_context.meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
                 let vertex_buffer_slice = vertex_buffer
                     .clone()
-                    .slice((12 * i) as u64..(12 * (i + 1)) as u64);
+                    .slice((mesh.verticies.len() * i) as u64..(mesh.verticies.len() * (i + 1)) as u64);
 
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
