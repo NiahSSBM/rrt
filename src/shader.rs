@@ -221,11 +221,6 @@ impl Shader {
                             .unwrap(),
                         0,
                         pad(bytes_of(&vs_default::vInput {
-                            colors: [
-                                [1.0, 0.0, 0.0, 1.0].into(),
-                                [0.0, 1.0, 0.0, 1.0].into(),
-                                [0.0, 0.0, 1.0, 1.0].into(),
-                            ],
                             mvp: {
                                 match perspective {
                                     AdditionalShaderProperties::Perspective(model, view, proj) => {
@@ -246,29 +241,12 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of(&vs_default::vInput {
+                    pad(bytes_of(&vs_custom::vColor {
                         colors: [
                             [1.0, 0.0, 0.0, 1.0].into(),
                             [0.0, 1.0, 0.0, 1.0].into(),
                             [0.0, 0.0, 1.0, 1.0].into(),
                         ],
-                        mvp: vs_default::MVPBuffer {
-                            model: Matrix4::new(
-                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                                1.0, 1.0, 1.0,
-                            )
-                            .into(),
-                            view: Matrix4::new(
-                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                                1.0, 1.0, 1.0,
-                            )
-                            .into(),
-                            proj: Matrix4::new(
-                                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                                1.0, 1.0, 1.0,
-                            )
-                            .into(),
-                        },
                     })),
                 ),
                 ShaderType::VertexWireframe => (
@@ -362,7 +340,7 @@ impl Shader {
 
     // This is temporarily very simple to test what it takes to update descriptor data
     // This is for updating the perspective matrix
-    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) -> Self{
+    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) -> Self {
         self.additional_properties = vec![shader_property];
         self.load()
     }

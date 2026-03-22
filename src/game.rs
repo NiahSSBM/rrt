@@ -45,26 +45,44 @@ pub fn game_main(data: GameData) {
     ]);
     let tri_verts = vec![
         // First tri
-        Vertex3D::new([0.0, 1.0, 0.0], css::RED),
-        Vertex3D::new([-1.0, -1.0, 1.0], css::BLUE),
-        Vertex3D::new([1.0, -1.0, 1.0], css::GREEN),
+        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
+        Vertex3D::new([-2.0, -1.0, 0.0], css::RED),
+        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
         // Second tri
-        Vertex3D::new([0.0, 1.0, 0.0], css::RED),
-        Vertex3D::new([-1.0, -1.0, -1.0], css::BLUE),
-        Vertex3D::new([1.0, -1.0, -1.0], css::GREEN),
+        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
+        Vertex3D::new([-2.0, -1.0, -2.0], css::RED),
+        Vertex3D::new([0.0, -1.0, -2.0], css::BLUE),
         // Third tri
-        Vertex3D::new([0.0, 1.0, 0.0], css::RED),
-        Vertex3D::new([-1.0, -1.0, -1.0], css::BLUE),
-        Vertex3D::new([-1.0, -1.0, 1.0], css::GREEN),
+        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
+        Vertex3D::new([-2.0, -1.0, -2.0], css::RED),
+        Vertex3D::new([-2.0, -1.0, 0.0], css::BLUE),
         // Fourth tri
-        Vertex3D::new([0.0, 1.0, 0.0], css::RED),
-        Vertex3D::new([1.0, -1.0, 1.0], css::BLUE),
-        Vertex3D::new([1.0, -1.0, -1.0], css::GREEN),
+        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
+        Vertex3D::new([0.0, -1.0, 0.0], css::RED),
+        Vertex3D::new([0.0, -1.0, -2.0], css::BLUE),
+    ];
+    let tri_verts2 = vec![
+        // First tri
+        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
+        Vertex3D::new([0.0, -1.0, 2.0], css::BLUE),
+        Vertex3D::new([2.0, -1.0, 2.0], css::GREEN),
+        // Second tri
+        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
+        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
+        Vertex3D::new([2.0, -1.0, 0.0], css::GREEN),
+        // Third tri
+        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
+        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
+        Vertex3D::new([0.0, -1.0, 2.0], css::GREEN),
+        // Fourth tri
+        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
+        Vertex3D::new([2.0, -1.0, 2.0], css::BLUE),
+        Vertex3D::new([2.0, -1.0, 0.0], css::GREEN),
     ];
     let mut perspective = AdditionalShaderProperties::Perspective(
         Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
         Matrix4::look_at_rh(
-            &Point3::new(2.0, 0.0, 0.0),  // Where the camera is
+            &Point3::new(4.0, 0.0, 0.0),  // Where the camera is
             &Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
             &Vector3::new(0.0, 1.0, 0.0), // What axis is up
         )
@@ -73,13 +91,15 @@ pub fn game_main(data: GameData) {
     );
     let mut tri_shaders = Shader::new(
         stage_pipeline.clone(),
-        vec![perspective],
+        vec![perspective.clone()],
         data.render_queue.clone(),
     );
 
     let mut meshes = vec![];
-    let mesh = Arc::new(Mutex::new(Mesh3D::new(tri_verts.clone(), tri_shaders)));
+    let mesh = Arc::new(Mutex::new(Mesh3D::new(tri_verts.clone(), tri_shaders.clone())));
+    let mesh2 = Arc::new(Mutex::new(Mesh3D::new(tri_verts2.clone(), tri_shaders)));
     meshes.push(mesh);
+    meshes.push(mesh2);
     for mesh in &meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
@@ -100,11 +120,11 @@ pub fn game_main(data: GameData) {
         }
 
         //vert_offsets += 0.01;
-        view_offset += 0.1;
+        view_offset += 0.05;
         perspective = AdditionalShaderProperties::Perspective(
             Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
             Matrix4::look_at_rh(
-                &Point3::new(3.0 * view_offset.sin(), 0.0, view_offset.cos() * 3.0), // Where the camera is
+                &Point3::new(4.0 * view_offset.sin(), 0.0, view_offset.cos() * 4.0), // Where the camera is
                 &Point3::new(0.0, 0.0, 0.0),   // Where the camera looks
                 &Vector3::new(0.0, -1.0, 0.0), // What axis is up
             )
@@ -116,6 +136,11 @@ pub fn game_main(data: GameData) {
             .lock()
             .unwrap()
             .shader
+            .update_descriptor(perspective.clone());
+        tri_shaders = meshes[1]
+            .lock()
+            .unwrap()
+            .shader
             .update_descriptor(perspective);
         //tri_shaders = Shader::new(
         //    stage_pipeline.clone(),
@@ -123,7 +148,8 @@ pub fn game_main(data: GameData) {
         //    data.render_queue.clone(),
         //);
 
-        meshes[0].lock().unwrap().shader = tri_shaders;
+        meshes[0].lock().unwrap().shader = tri_shaders.clone();
+        meshes[1].lock().unwrap().shader = tri_shaders;
         thread::sleep(Duration::from_millis(16));
         data.to_render
             .send(RenderEvent::UpdateVertexBuffer)
