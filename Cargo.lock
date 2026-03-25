@@ -1354,6 +1354,7 @@ dependencies = [
  "color",
  "nalgebra",
  "rand",
+ "stl_io",
  "vulkano",
  "vulkano-shaders",
  "winit",
@@ -1574,6 +1575,12 @@ checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "stl_io"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567641995c51a3b8befddb13e1826187bcf7eb7ca8d13746bfd1cc5a22e89fa8"
 
 [[package]]
 name = "strict-num"

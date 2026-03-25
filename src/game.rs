@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -10,6 +11,7 @@ use color::palette::css;
 use nalgebra::Matrix4;
 use nalgebra::Point3;
 use nalgebra::Vector3;
+use rand::TryRngCore;
 use vulkano::buffer::view;
 use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
@@ -43,42 +45,31 @@ pub fn game_main(data: GameData) {
         (ShaderStage::Vertex, ShaderType::VertexDefault),
         (ShaderStage::Fragment, ShaderType::FragmentDefault),
     ]);
-    let tri_verts = vec![
-        // First tri
-        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
-        Vertex3D::new([-2.0, -1.0, 0.0], css::RED),
-        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
-        // Second tri
-        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
-        Vertex3D::new([-2.0, -1.0, -2.0], css::RED),
-        Vertex3D::new([0.0, -1.0, -2.0], css::BLUE),
-        // Third tri
-        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
-        Vertex3D::new([-2.0, -1.0, -2.0], css::RED),
-        Vertex3D::new([-2.0, -1.0, 0.0], css::BLUE),
-        // Fourth tri
-        Vertex3D::new([-1.0, 1.0, -1.0], css::RED),
-        Vertex3D::new([0.0, -1.0, 0.0], css::RED),
-        Vertex3D::new([0.0, -1.0, -2.0], css::BLUE),
-    ];
-    let tri_verts2 = vec![
-        // First tri
-        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
-        Vertex3D::new([0.0, -1.0, 2.0], css::BLUE),
-        Vertex3D::new([2.0, -1.0, 2.0], css::GREEN),
-        // Second tri
-        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
-        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
-        Vertex3D::new([2.0, -1.0, 0.0], css::GREEN),
-        // Third tri
-        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
-        Vertex3D::new([0.0, -1.0, 0.0], css::BLUE),
-        Vertex3D::new([0.0, -1.0, 2.0], css::GREEN),
-        // Fourth tri
-        Vertex3D::new([1.0, 1.0, 1.0], css::BLUE),
-        Vertex3D::new([2.0, -1.0, 2.0], css::BLUE),
-        Vertex3D::new([2.0, -1.0, 0.0], css::GREEN),
-    ];
+
+    // Load STL model file
+    let mut file = OpenOptions::new().read(true).open("models/horse.stl").unwrap();
+    let stl = stl_io::read_stl(&mut file).unwrap();
+    println!(
+        "Number of triangles read from file: {:?}",
+        stl.faces.iter().size_hint()
+    );
+    println!("Model validated: {:?}", stl.validate());
+
+    let mut model_verts: Vec<Vertex3D> = vec![];
+    let mut model_indicies: Vec<usize> = vec![];
+
+    for stl_vert in stl.vertices {
+        let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
+        let rand = rand::rng().try_next_u32().unwrap() % 3;
+
+        model_verts.push(Vertex3D::new(stl_vert.into(), colors[rand as usize]));
+    }
+    for stl_faces in stl.faces {
+        for tri_indicies in stl_faces.vertices {
+            model_indicies.push(tri_indicies);
+        }
+    }
+
     let mut perspective = AdditionalShaderProperties::Perspective(
         Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
         Matrix4::look_at_rh(
@@ -96,10 +87,12 @@ pub fn game_main(data: GameData) {
     );
 
     let mut meshes = vec![];
-    let mesh = Arc::new(Mutex::new(Mesh3D::new(tri_verts.clone(), tri_shaders.clone())));
-    let mesh2 = Arc::new(Mutex::new(Mesh3D::new(tri_verts2.clone(), tri_shaders)));
+    let mesh = Arc::new(Mutex::new(Mesh3D::new(
+        model_verts.clone(),
+        model_indicies.iter().map(|i| i.clone() as u32).collect(),
+        tri_shaders.clone(),
+    )));
     meshes.push(mesh);
-    meshes.push(mesh2);
     for mesh in &meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
@@ -124,9 +117,9 @@ pub fn game_main(data: GameData) {
         perspective = AdditionalShaderProperties::Perspective(
             Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
             Matrix4::look_at_rh(
-                &Point3::new(4.0 * view_offset.sin(), 0.0, view_offset.cos() * 4.0), // Where the camera is
-                &Point3::new(0.0, 0.0, 0.0),   // Where the camera looks
-                &Vector3::new(0.0, -1.0, 0.0), // What axis is up
+                &Point3::new(3.0 * view_offset.sin(), view_offset.cos() * 3.0, 2.0), // Where the camera is
+                &Point3::new(0.0, 0.0, 1.0),   // Where the camera looks
+                &Vector3::new(0.0, 0.0, -1.0), // What axis is up
             )
             .into(),
             Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
@@ -137,19 +130,8 @@ pub fn game_main(data: GameData) {
             .unwrap()
             .shader
             .update_descriptor(perspective.clone());
-        tri_shaders = meshes[1]
-            .lock()
-            .unwrap()
-            .shader
-            .update_descriptor(perspective);
-        //tri_shaders = Shader::new(
-        //    stage_pipeline.clone(),
-        //    vec![perspective],
-        //    data.render_queue.clone(),
-        //);
 
-        meshes[0].lock().unwrap().shader = tri_shaders.clone();
-        meshes[1].lock().unwrap().shader = tri_shaders;
+        meshes[0].lock().unwrap().shader = tri_shaders;
         thread::sleep(Duration::from_millis(16));
         data.to_render
             .send(RenderEvent::UpdateVertexBuffer)

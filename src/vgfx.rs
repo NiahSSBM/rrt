@@ -50,10 +50,10 @@ use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
 use winit::platform::wayland::EventLoopExtWayland;
-use winit::window::Window;
+use winit::window::{self, Window};
 
 use crate::game::{GameData, GameEvent, RenderEvent};
-use crate::mesh::{Mesh2D, Mesh3D, combine_verticies};
+use crate::mesh::{Mesh2D, Mesh3D, combine_vec};
 use crate::shader::{Vertex2D, Vertex3D};
 
 #[derive(Default, PartialEq)]
@@ -78,9 +78,11 @@ pub struct WindowContext {
     command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    index_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
+    index_buffer: Option<Subbuffer<[u32]>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     surface: Option<Arc<Surface>>,
@@ -449,6 +451,11 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
         .vertex_buffer
         .as_ref()
         .expect("ERROR: There's no vertex buffer!");
+    let index_buffer = window_context
+        .index_buffer
+        .as_ref()
+        .expect("ERROR: There's no index buffer!");
+
     window_context
         .framebuffer
         .clone()
@@ -482,15 +489,17 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
             // Bind the shader pipeline, verticies, and descriptor sets for each mesh
             for (i, mesh_mutex) in window_context.meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
-                let vertex_buffer_slice = vertex_buffer
-                    .clone()
-                    .slice((mesh.verticies.len() * i) as u64..(mesh.verticies.len() * (i + 1)) as u64);
+                let vertex_buffer_slice = vertex_buffer.clone().slice(
+                    (mesh.verticies.len() * i) as u64..(mesh.verticies.len() * (i + 1)) as u64,
+                );
 
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
                     .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
                     .bind_vertex_buffers(0, vertex_buffer_slice.clone())
                     .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
+                    .bind_index_buffer(index_buffer.clone())
+                    .unwrap_or_else(|err| panic!("Could not bind index buffers: {:?}", err))
                     .bind_descriptor_sets(
                         PipelineBindPoint::Graphics,
                         pipelines[i].layout().clone(),
@@ -506,7 +515,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
                     // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw(vertex_buffer_slice.len() as u32, 1, 0, 0)
+                        .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
             }
@@ -685,7 +694,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
 }
 
 pub fn update_vertex_buffer(window_context: &mut WindowContext) {
-    // Create new vertext buffer allocator if there isn't one already
+    // Create new vertex buffer allocator if there isn't one already
     if window_context.vertex_buffer_allocator.is_none() {
         println!("No vertex buffer alloctor found, creating new one...");
         let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
@@ -694,16 +703,30 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
         window_context.vertex_buffer_allocator = Some(vertex_memory_allocator.clone());
     }
 
-    // Put all verticies in all meshes in the vertex buffer
-    let mut verticies = vec![];
-    for mesh_mutex in &window_context.meshes {
-        let mesh = mesh_mutex.lock().unwrap();
-        verticies = combine_verticies(vec![verticies, mesh.verticies.clone()])
+    // Also create new index buffer allocator if there isn't one
+    if window_context.index_buffer_allocator.is_none() {
+        println!("No index buffer alloctor found, creating new one...");
+        let index_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
+            window_context.device.as_ref().unwrap().clone(),
+        ));
+        window_context.index_buffer_allocator = Some(index_memory_allocator.clone());
     }
 
-    // Buffer::from_iter will panic if there's no verticies, so we'll make one vertex if there isn't one
+    // Fill the vertex and index buffers with all of our models
+    let mut verticies: Vec<Vertex3D> = vec![];
+    let mut indicies: Vec<u32> = vec![];
+    for mesh_mutex in &window_context.meshes {
+        let mesh = mesh_mutex.lock().unwrap();
+        verticies = combine_vec(vec![verticies, mesh.verticies.clone()]);
+        indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
+    }
+
+    // Buffer::from_iter will panic if there's no verticies or indicies, so we'll make one if either are empty
     if verticies.is_empty() {
         verticies.push(Vertex3D::new([0.0, 0.0, 0.0], AlphaColor::WHITE));
+    }
+    if indicies.is_empty() {
+        indicies.push(0);
     }
     let vertex_buffer = Buffer::from_iter(
         window_context
@@ -723,7 +746,28 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
         verticies,
     )
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
+
+    let index_buffer = Buffer::from_iter(
+        window_context
+            .index_buffer_allocator
+            .as_ref()
+            .unwrap()
+            .clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::INDEX_BUFFER,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        indicies,
+    )
+    .unwrap_or_else(|err| panic!("Could not create index buffer: {:?}", err));
+
     window_context.vertex_buffer = Some(vertex_buffer);
+    window_context.index_buffer = Some(index_buffer);
     window_context.pipelines = create_pipelines(window_context);
     window_context.command_buffers = Some(create_command_buffers(window_context));
 }

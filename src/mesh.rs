@@ -9,6 +9,7 @@ pub struct Mesh2D {
 #[derive(Clone)]
 pub struct Mesh3D {
     pub verticies: Vec<Vertex3D>,
+    pub indicies: Vec<u32>,
     pub shader: Shader,
 }
 
@@ -22,16 +23,17 @@ impl Mesh2D {
 }
 
 impl Mesh3D {
-    pub fn new(verts: Vec<Vertex3D>, shader: Shader) -> Self {
+    pub fn new(verticies: Vec<Vertex3D>, indicies: Vec<u32>, shader: Shader) -> Self {
         Self {
-            verticies: verts,
-            shader: shader,
+            verticies,
+            indicies,
+            shader,
         }
     }
 }
 
-pub fn combine_verticies(verts: Vec<Vec<Vertex3D>>) -> Vec<Vertex3D> {
-    let mut out: Vec<Vertex3D> = Vec::new();
+pub fn combine_vec<T>(verts: Vec<Vec<T>>) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
     for mut vec in verts {
         out.try_reserve(vec.len())
             .unwrap_or_else(|e| panic!("Could not combine verticies: {:?}", e));
