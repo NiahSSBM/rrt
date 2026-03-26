@@ -18,7 +18,7 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::Platform;
+use crate::vgfx::{Platform, update_pipelines};
 use crate::vgfx::update_vertex_buffer;
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
@@ -76,9 +76,17 @@ impl ApplicationHandler for App {
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("The close button was pressed; stopping");
-                        match window_context.game_thread_sender.as_ref().unwrap().send(game::GameEvent::GameClose) {
+                        match window_context
+                            .game_thread_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(game::GameEvent::GameClose)
+                        {
                             Ok(_) => (),
-                            Err(err) => println!("Failed to send game close event to render thread, closing anyway... {:?}", err),
+                            Err(err) => println!(
+                                "Failed to send game close event to render thread, closing anyway... {:?}",
+                                err
+                            ),
                         };
                         event_loop.exit();
                     }
@@ -94,7 +102,9 @@ impl ApplicationHandler for App {
                                         if frametime_update_mg.is_none() {
                                             *frametime_update_mg = Some(Instant::now());
                                         }
-                                        if frametime_update_mg.unwrap().elapsed() > Duration::from_secs(1) {
+                                        if frametime_update_mg.unwrap().elapsed()
+                                            > Duration::from_secs(1)
+                                        {
                                             println!("{} FPS", *fs_mg);
                                             *fs_mg = 0;
                                             *frametime_update_mg = Some(Instant::now());
@@ -108,6 +118,7 @@ impl ApplicationHandler for App {
                         }
 
                         let mut should_update_buffers = false;
+                        let mut should_update_pipelines = false;
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -124,13 +135,22 @@ impl ApplicationHandler for App {
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
+
                                 }
+                                RenderEvent::UpdatePipelines => {
+                                    should_update_pipelines = true;
+                                },
                             },
                             Err(_) => (),
                         }
-                        // This only triggers if a mesh was added
+                        // Runs if verticies are changed
                         if should_update_buffers {
                             update_vertex_buffer(window_context);
+                        }
+
+                        // Runs if shaders or perspective is updated
+                        if should_update_pipelines {
+                            update_pipelines(window_context);
                         }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing

@@ -30,6 +30,7 @@ use crate::shader::fs_custom::load;
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
     UpdateVertexBuffer,
+    UpdatePipelines,
 }
 
 pub enum GameEvent {
@@ -50,7 +51,7 @@ pub fn game_main(data: GameData) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/horse.stl", "models/pig.stl", "models/cat.stl"];
+    let model_paths = vec!["models/horse.stl", "models/cat.stl", "models/pig.stl"];
     let models = load_stls(model_paths);
 
     let mut meshes = vec![];
@@ -98,6 +99,9 @@ pub fn game_main(data: GameData) {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
             .expect("Failed to send mesh data to render thread!");
+        data.to_render
+            .send(RenderEvent::UpdateVertexBuffer)
+            .expect("Failed to request vertex buffer update!");
     }
 
     let mut view_offset: f32 = 0.0;
@@ -138,8 +142,8 @@ pub fn game_main(data: GameData) {
 
         thread::sleep(Duration::from_millis(16));
         data.to_render
-            .send(RenderEvent::UpdateVertexBuffer)
-            .expect("Failed to request vertex buffer update!");
+            .send(RenderEvent::UpdatePipelines)
+            .expect("Failed to request pipeline update!");
     }
 }
 

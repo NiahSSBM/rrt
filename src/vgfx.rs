@@ -250,7 +250,7 @@ pub fn redraw(window_context: &mut WindowContext) {
             None
         }
     };
-
+    
     window_context.previous_fence_i = image_i;
 }
 
@@ -782,6 +782,11 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
 
     window_context.vertex_buffer = Some(vertex_buffer);
     window_context.index_buffer = Some(index_buffer);
+    update_pipelines(window_context);
+}
+
+// This is called when we only need to update shaders and perspective
+pub fn update_pipelines(window_context: &mut WindowContext) {
     window_context.pipelines = create_pipelines(window_context);
     window_context.command_buffers = Some(create_command_buffers(window_context));
 }
