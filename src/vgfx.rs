@@ -1,8 +1,10 @@
 use std::collections::TryReserveError;
 
+use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
+use vulkano::half::slice;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
@@ -487,11 +489,23 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
 
             // Bind the shader pipeline, verticies, and descriptor sets for each mesh
+            let mut vertex_slice_start: u64;
+            let mut vertex_slice_end: u64 = 0;
+            let mut index_slice_start: u64;
+            let mut index_slice_end: u64 = 0;
             for (i, mesh_mutex) in window_context.meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
-                let vertex_buffer_slice = vertex_buffer.clone().slice(
-                    (mesh.verticies.len() * i) as u64..(mesh.verticies.len() * (i + 1)) as u64,
-                );
+                vertex_slice_start = vertex_slice_end;
+                vertex_slice_end = vertex_slice_start + mesh.verticies.len() as u64;
+                index_slice_start = index_slice_end;
+                index_slice_end = index_slice_start + mesh.indicies.len() as u64;
+
+
+                // Slices must be within buffers
+                assert!(vertex_buffer.size() >= vertex_slice_end * size_of::<Vertex3D>() as u64);
+                assert!(index_buffer.size() >= index_slice_end * size_of::<u32>() as u64);
+                
+                let vertex_buffer_slice = vertex_buffer.clone().slice(vertex_slice_start..vertex_slice_end);
 
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
@@ -515,7 +529,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
                     // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
+                        .draw_indexed(mesh.indicies.len() as u32, 1, index_slice_start as u32, 0, 0)
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
             }

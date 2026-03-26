@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::f32::consts::E;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,6 +13,7 @@ use nalgebra::Matrix4;
 use nalgebra::Point3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
+use stl_io::IndexedMesh;
 use vulkano::buffer::view;
 use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
@@ -23,6 +25,7 @@ use crate::shader::Shader;
 use crate::shader::ShaderType;
 use crate::shader::Vertex2D;
 use crate::shader::Vertex3D;
+use crate::shader::fs_custom::load;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
@@ -47,29 +50,10 @@ pub fn game_main(data: GameData) {
     ]);
 
     // Load STL model file
-    let mut file = OpenOptions::new().read(true).open("models/horse.stl").unwrap();
-    let stl = stl_io::read_stl(&mut file).unwrap();
-    println!(
-        "Number of triangles read from file: {:?}",
-        stl.faces.iter().size_hint()
-    );
-    println!("Model validated: {:?}", stl.validate());
+    let model_paths = vec!["models/horse.stl", "models/pig.stl", "models/cat.stl"];
+    let models = load_stls(model_paths);
 
-    let mut model_verts: Vec<Vertex3D> = vec![];
-    let mut model_indicies: Vec<usize> = vec![];
-
-    for stl_vert in stl.vertices {
-        let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
-        let rand = rand::rng().try_next_u32().unwrap() % 3;
-
-        model_verts.push(Vertex3D::new(stl_vert.into(), colors[rand as usize]));
-    }
-    for stl_faces in stl.faces {
-        for tri_indicies in stl_faces.vertices {
-            model_indicies.push(tri_indicies);
-        }
-    }
-
+    let mut meshes = vec![];
     let mut perspective = AdditionalShaderProperties::Perspective(
         Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
         Matrix4::look_at_rh(
@@ -86,13 +70,30 @@ pub fn game_main(data: GameData) {
         data.render_queue.clone(),
     );
 
-    let mut meshes = vec![];
-    let mesh = Arc::new(Mutex::new(Mesh3D::new(
-        model_verts.clone(),
-        model_indicies.iter().map(|i| i.clone() as u32).collect(),
-        tri_shaders.clone(),
-    )));
-    meshes.push(mesh);
+    for model in models {
+        let mut model_verts: Vec<Vertex3D> = vec![];
+        let mut model_indicies: Vec<usize> = vec![];
+
+        for vertex in model.vertices {
+            let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
+            let rand = rand::rng().try_next_u32().unwrap() % 3;
+
+            model_verts.push(Vertex3D::new(vertex.into(), colors[rand as usize]));
+        }
+        for face in model.faces {
+            for tri_indicies in face.vertices {
+                model_indicies.push(tri_indicies);
+            }
+        }
+
+        let mesh = Arc::new(Mutex::new(Mesh3D::new(
+            model_verts.clone(),
+            model_indicies.iter().map(|i| i.clone() as u32).collect(),
+            tri_shaders.clone(),
+        )));
+        meshes.push(mesh);
+    }
+
     for mesh in &meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
@@ -125,16 +126,51 @@ pub fn game_main(data: GameData) {
             Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
         );
 
-        tri_shaders = meshes[0]
-            .lock()
-            .unwrap()
-            .shader
-            .update_descriptor(perspective.clone());
+        for mesh in meshes.clone() {
+            tri_shaders = mesh
+                .lock()
+                .unwrap()
+                .shader
+                .update_descriptor(perspective.clone());
 
-        meshes[0].lock().unwrap().shader = tri_shaders;
+            mesh.lock().unwrap().shader = tri_shaders;
+        }
+
         thread::sleep(Duration::from_millis(16));
         data.to_render
             .send(RenderEvent::UpdateVertexBuffer)
             .expect("Failed to request vertex buffer update!");
     }
+}
+
+fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
+    let mut loaded_models: Vec<IndexedMesh> = Vec::new();
+
+    for path in paths {
+        println!("Loading model {}", path);
+        let mut file = match OpenOptions::new().read(true).open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                println!("Could not open file: {e}");
+                continue;
+            }
+        };
+
+        match stl_io::read_stl(&mut file) {
+            Ok(m) => {
+                println!("Model validation: {:?}", m.validate());
+                println!(
+                    "Number of triangles read from file: {:?}",
+                    m.faces.iter().size_hint()
+                );
+                loaded_models.push(m);
+            }
+            Err(e) => {
+                println!("Could not load STL: {e}");
+                continue;
+            }
+        };
+    }
+
+    loaded_models
 }
