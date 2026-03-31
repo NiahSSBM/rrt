@@ -1,10 +1,8 @@
 use std::collections::TryReserveError;
 
-use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
-use vulkano::half::slice;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
@@ -19,19 +17,25 @@ use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateFlags,
     QueueCreateInfo,
 };
-use vulkano::format::Format;
-use vulkano::image::ImageLayout::PresentSrc;
+use vulkano::format::{ClearValue, Format};
+use vulkano::image::ImageLayout::{self, PresentSrc};
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
-use vulkano::image::{Image, ImageAspects, ImageSubresourceRange, ImageUsage};
+use vulkano::image::{
+    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange,
+    ImageType, ImageUsage,
+};
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{
     AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
     StandardMemoryAllocator,
 };
+use vulkano::memory::{MemoryPropertyFlags};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::depth_stencil::{
+    DepthState, DepthStencilState,
+};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
@@ -42,7 +46,6 @@ use vulkano::pipeline::{
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderStage;
-use vulkano::shader::spirv::ExecutionModel;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -52,11 +55,11 @@ use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
 use winit::platform::wayland::EventLoopExtWayland;
-use winit::window::{self, Window};
+use winit::window::Window;
 
-use crate::game::{GameData, GameEvent, RenderEvent};
-use crate::mesh::{Mesh2D, Mesh3D, combine_vec};
-use crate::shader::{Vertex2D, Vertex3D};
+use crate::game::{GameEvent, RenderEvent};
+use crate::mesh::{Mesh3D, combine_vec};
+use crate::shader::Vertex3D;
 
 #[derive(Default, PartialEq)]
 pub enum Platform {
@@ -81,10 +84,12 @@ pub struct WindowContext {
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     index_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    image_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
     index_buffer: Option<Subbuffer<[u32]>>,
+    depth_buffer: Option<Arc<ImageView>>,
     framebuffer: Option<Vec<Arc<Framebuffer>>>,
     swapchain: Option<Arc<Swapchain>>,
     surface: Option<Arc<Surface>>,
@@ -161,9 +166,21 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
         })
         .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
 
+    // This might not be necessary
+    let depth_buffer = create_depth_image_view(
+        window_context.image_allocator.as_ref().unwrap().clone(),
+        [
+            window_context.viewport.extent[0] as u32,
+            window_context.viewport.extent[1] as u32,
+        ],
+    )
+    .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
+    window_context.depth_buffer = Some(depth_buffer.clone());
+
     let new_framebuffers = create_frame_buffer(
         window_context.render_pass.clone().unwrap(),
         &new_images,
+        depth_buffer,
         format,
     );
 
@@ -250,7 +267,7 @@ pub fn redraw(window_context: &mut WindowContext) {
             None
         }
     };
-    
+
     window_context.previous_fence_i = image_i;
 }
 
@@ -381,6 +398,26 @@ fn create_swapchain(
     Swapchain::new(device, surface, swapchain_create_info)
 }
 
+fn create_depth_image_view(
+    allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    extent: [u32; 2],
+) -> Result<Arc<ImageView>, Validated<VulkanError>> {
+    ImageView::new_default(
+        Image::new(
+            allocator,
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: Format::D24_UNORM_S8_UINT,
+                extent: [extent[0], extent[1], 1],
+                usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .unwrap(),
+    )
+}
+
 // TODO:
 // Cache already created shaders so they don't need their own pipeline
 // Batch host/device buffer copies so it's not copied for every mesh
@@ -409,6 +446,11 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
 
         let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
 
+        let depth_stencil_state = DepthStencilState {
+            depth: Some(DepthState::simple()),
+            ..Default::default()
+        };
+
         let stages = [
             PipelineShaderStageCreateInfo::new(vs.clone()),
             PipelineShaderStageCreateInfo::new(fs.clone()),
@@ -435,6 +477,7 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
                     ColorBlendAttachmentState::default(),
                 )),
                 subpass: Some(subpass.into()),
+                depth_stencil_state: Some(depth_stencil_state),
                 // Our pipeline is pre-computed and is attached to our shader on our mesh
                 ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
             },
@@ -473,12 +516,15 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 window_context.queues.as_ref().unwrap()[0].queue_family_index(),
                 CommandBufferUsage::MultipleSubmit,
             )
-            .unwrap_or_else(|err| panic!("Could not create framebuffer: {:?}", err));
+            .unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
 
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())], // Background color
+                        clear_values: vec![
+                            Some([0.0, 0.0, 0.0, 1.0].into()), // Background color
+                            Some(ClearValue::DepthStencil((1.0, 1))),      // Depth buffer
+                        ],
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
                     SubpassBeginInfo {
@@ -500,12 +546,13 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 index_slice_start = index_slice_end;
                 index_slice_end = index_slice_start + mesh.indicies.len() as u64;
 
-
                 // Slices must be within buffers
                 assert!(vertex_buffer.size() >= vertex_slice_end * size_of::<Vertex3D>() as u64);
                 assert!(index_buffer.size() >= index_slice_end * size_of::<u32>() as u64);
-                
-                let vertex_buffer_slice = vertex_buffer.clone().slice(vertex_slice_start..vertex_slice_end);
+
+                let vertex_buffer_slice = vertex_buffer
+                    .clone()
+                    .slice(vertex_slice_start..vertex_slice_end);
 
                 builder
                     .bind_pipeline_graphics(pipelines[i].clone())
@@ -529,7 +576,13 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
                     // Right now this assumes every mesh has the same number of verticies
                     builder
-                        .draw_indexed(mesh.indicies.len() as u32, 1, index_slice_start as u32, 0, 0)
+                        .draw_indexed(
+                            mesh.indicies.len() as u32,
+                            1,
+                            index_slice_start as u32,
+                            0,
+                            0,
+                        )
                         .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
                 }
             }
@@ -558,10 +611,18 @@ fn create_render_pass(
                 initial_layout: PresentSrc,
                 final_layout: PresentSrc
             },
+            ds: {
+                format: Format::D24_UNORM_S8_UINT,
+                samples: 1,
+                load_op: Clear,
+                store_op: DontCare,
+                initial_layout: ImageLayout::Undefined,
+                final_layout: ImageLayout::DepthStencilAttachmentOptimal
+            }
         },
         pass: {
             color: [rp],
-            depth_stencil: {},
+            depth_stencil: {ds},
         },
     )
 }
@@ -569,6 +630,7 @@ fn create_render_pass(
 fn create_frame_buffer(
     render_pass: Arc<RenderPass>,
     images: &Vec<Arc<Image>>,
+    depth_buffer: Arc<ImageView>,
     format: Format,
 ) -> Vec<Arc<Framebuffer>> {
     let image_views: Vec<Arc<ImageView>> = images
@@ -600,7 +662,7 @@ fn create_frame_buffer(
             Framebuffer::new(
                 render_pass.clone(),
                 FramebufferCreateInfo {
-                    attachments: vec![image.clone()],
+                    attachments: vec![image.clone(), depth_buffer.clone()],
                     ..Default::default()
                 },
             )
@@ -661,6 +723,21 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     window_context.images = Some(swapchain_images.clone());
     println!("Successfully created swapchain");
 
+    // Create depth buffer
+    let image_allocator = Arc::new(StandardMemoryAllocator::new_default(
+        window_context.device.as_ref().unwrap().clone(),
+    ));
+    window_context.image_allocator = Some(image_allocator.clone());
+    let depth_buffer = create_depth_image_view(
+        image_allocator,
+        [
+            window_context.viewport.extent[0] as u32,
+            window_context.viewport.extent[1] as u32,
+        ],
+    )
+    .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
+    window_context.depth_buffer = Some(depth_buffer.clone());
+
     // Create render pass
     let render_pass = create_render_pass(device.clone(), swapchain.clone())
         .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
@@ -671,6 +748,7 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     let framebuffer = create_frame_buffer(
         render_pass.clone(),
         &swapchain_images,
+        depth_buffer,
         swapchain.image_format(),
     );
     window_context.framebuffer = Some(framebuffer.clone());
