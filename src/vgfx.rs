@@ -22,20 +22,17 @@ use vulkano::image::ImageLayout::{self, PresentSrc};
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{
-    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange,
-    ImageType, ImageUsage,
+    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{
     AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
     StandardMemoryAllocator,
 };
-use vulkano::memory::{MemoryPropertyFlags};
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::depth_stencil::{
-    DepthState, DepthStencilState,
-};
+use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
@@ -288,9 +285,26 @@ fn get_device_total_memory(device: &Arc<PhysicalDevice>) -> u64 {
 
 fn select_device(
     devices: impl ExactSizeIterator<Item = Arc<PhysicalDevice>>,
+    preferred_device: Option<String>,
 ) -> Option<Arc<PhysicalDevice>> {
     let mut selected_device: Option<Arc<PhysicalDevice>> = None;
+    let mut device_override: Option<Arc<PhysicalDevice>> = None;
     for device in devices {
+        if device
+            .properties()
+            .device_name
+            .to_ascii_lowercase()
+            .contains(
+                &preferred_device
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            )
+            && preferred_device.is_some()
+        {
+            device_override = Some(device.clone());
+        }
+
         selected_device = match selected_device {
             Some(device) => {
                 if device.properties().device_type == PhysicalDeviceType::DiscreteGpu
@@ -310,7 +324,15 @@ fn select_device(
             None => Some(device),
         };
     }
-    selected_device
+
+    if device_override.is_some() {
+        device_override
+    } else {
+        if preferred_device.is_some() {
+            println!("Requested device not found...");
+        }
+        selected_device
+    }
 }
 
 fn create_device(
@@ -522,8 +544,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .begin_render_pass(
                     RenderPassBeginInfo {
                         clear_values: vec![
-                            Some([0.0, 0.0, 0.0, 1.0].into()), // Background color
-                            Some(ClearValue::DepthStencil((1.0, 1))),      // Depth buffer
+                            Some([0.0, 0.0, 0.0, 1.0].into()),        // Background color
+                            Some(ClearValue::DepthStencil((1.0, 1))), // Depth buffer
                         ],
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
@@ -671,7 +693,7 @@ fn create_frame_buffer(
         .collect()
 }
 
-pub fn init_vulkano(window_context: &mut WindowContext) {
+pub fn init_vulkano(window_context: &mut WindowContext, preferred_device: Option<String>) {
     let window_context = window_context;
     let window = window_context
         .window
@@ -691,7 +713,11 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
             physical_device.properties().device_name,
         );
     }
-    let selected_device = select_device(available_devices)
+
+    if preferred_device.is_some() {
+        println!("Device override requested...");
+    }
+    let selected_device = select_device(available_devices, preferred_device)
         .expect("Could not select a device! Are there not any display devices?");
     println!(
         "Selected device: {}",

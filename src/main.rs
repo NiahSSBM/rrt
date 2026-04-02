@@ -4,8 +4,8 @@ pub mod shader;
 mod vgfx;
 
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, thread, usize};
 use vgfx::WindowContext;
 use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
@@ -18,8 +18,8 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::{Platform, update_pipelines};
 use crate::vgfx::update_vertex_buffer;
+use crate::vgfx::{Platform, update_pipelines};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -28,6 +28,7 @@ static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(Non
 struct App {
     window_contexts: Vec<WindowContext>,
     resume_count: u32,
+    preferred_device: Option<String>,
 }
 
 impl ApplicationHandler for App {
@@ -47,7 +48,7 @@ impl ApplicationHandler for App {
                     .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
             );
             self.window_contexts[i].window = Some(window);
-            init_vulkano(&mut self.window_contexts[i]);
+            init_vulkano(&mut self.window_contexts[i], self.preferred_device.clone());
 
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
@@ -135,11 +136,10 @@ impl ApplicationHandler for App {
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
-
                                 }
                                 RenderEvent::UpdatePipelines => {
                                     should_update_pipelines = true;
-                                },
+                                }
                             },
                             Err(_) => (),
                         }
@@ -192,6 +192,13 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let preferred_device_position: Option<usize> = args.iter().position(|f| f.to_ascii_lowercase() == "--device");
+    let mut preferred_device: Option<String> = None;
+    if preferred_device_position.is_some() {
+        preferred_device = args.get(preferred_device_position.unwrap() + 1).cloned();
+    }
+
     // Start initializing the window
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
     // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing wayland
@@ -206,6 +213,7 @@ fn main() {
 
     let mut app = App {
         window_contexts: vec![window_context],
+        preferred_device,
         ..Default::default()
     };
 
