@@ -345,11 +345,9 @@ fn create_device(
         }],
         enabled_extensions: DeviceExtensions {
             khr_swapchain: true,
-            khr_fragment_shader_barycentric: true,
             ..Default::default()
         },
         enabled_features: DeviceFeatures {
-            fragment_shader_barycentric: true,
             ..Default::default()
         },
         ..Default::default()
