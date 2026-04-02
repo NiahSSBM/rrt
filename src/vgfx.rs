@@ -427,7 +427,7 @@ fn create_depth_image_view(
             allocator,
             ImageCreateInfo {
                 image_type: ImageType::Dim2d,
-                format: Format::D24_UNORM_S8_UINT,
+                format: Format::D16_UNORM,
                 extent: [extent[0], extent[1], 1],
                 usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
                 ..Default::default()
@@ -543,7 +543,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     RenderPassBeginInfo {
                         clear_values: vec![
                             Some([0.0, 0.0, 0.0, 1.0].into()),        // Background color
-                            Some(ClearValue::DepthStencil((1.0, 1))), // Depth buffer
+                            Some(ClearValue::Depth(1.0)), // Depth buffer
                         ],
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
@@ -632,7 +632,7 @@ fn create_render_pass(
                 final_layout: PresentSrc
             },
             ds: {
-                format: Format::D24_UNORM_S8_UINT,
+                format: Format::D16_UNORM,
                 samples: 1,
                 load_op: Clear,
                 store_op: DontCare,
