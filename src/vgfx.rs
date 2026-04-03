@@ -1,5 +1,6 @@
 use std::collections::TryReserveError;
 
+use std::io::empty;
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
@@ -9,20 +10,18 @@ use std::vec;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
-    SubpassBeginInfo, SubpassContents,
+    AutoCommandBufferBuilder, ClearDepthStencilImageInfo, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents
 };
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateFlags,
-    QueueCreateInfo,
+    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue, QueueCreateFlags, QueueCreateInfo
 };
-use vulkano::format::{ClearValue, Format};
+use vulkano::format::{ClearDepthStencilValue, ClearValue, Format};
 use vulkano::image::ImageLayout::{self, PresentSrc};
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{
-    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
+    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage, SampleCount,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
@@ -41,14 +40,18 @@ use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::render_pass::{
+    AttachmentDescription, AttachmentLoadOp, AttachmentReference, AttachmentStoreOp, Framebuffer,
+    FramebufferCreateInfo, RenderPass, RenderPassCreateInfo, Subpass, SubpassDependency,
+    SubpassDescription,
+};
 use vulkano::shader::ShaderStage;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
     SurfaceCapabilities, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
 };
 use vulkano::sync::future::FenceSignalFuture;
-use vulkano::sync::{self, GpuFuture, Sharing};
+use vulkano::sync::{self, AccessFlags, GpuFuture, PipelineStages, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
 use winit::platform::wayland::EventLoopExtWayland;
@@ -81,7 +84,7 @@ pub struct WindowContext {
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     index_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
-    image_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
+    image_allocator: Option<Arc<StandardMemoryAllocator>>,
     pub queues: Option<Vec<Arc<Queue>>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
@@ -163,21 +166,10 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
         })
         .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
 
-    // This might not be necessary
-    let depth_buffer = create_depth_image_view(
-        window_context.image_allocator.as_ref().unwrap().clone(),
-        [
-            window_context.viewport.extent[0] as u32,
-            window_context.viewport.extent[1] as u32,
-        ],
-    )
-    .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
-    window_context.depth_buffer = Some(depth_buffer.clone());
-
     let new_framebuffers = create_frame_buffer(
         window_context.render_pass.clone().unwrap(),
         &new_images,
-        depth_buffer,
+        window_context.depth_buffer.clone().unwrap(),
         format,
     );
 
@@ -419,7 +411,7 @@ fn create_swapchain(
 }
 
 fn create_depth_image_view(
-    allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    allocator: Arc<StandardMemoryAllocator>,
     extent: [u32; 2],
 ) -> Result<Arc<ImageView>, Validated<VulkanError>> {
     ImageView::new_default(
@@ -542,8 +534,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .begin_render_pass(
                     RenderPassBeginInfo {
                         clear_values: vec![
-                            Some([0.0, 0.0, 0.0, 1.0].into()),        // Background color
-                            Some(ClearValue::Depth(1.0)), // Depth buffer
+                            Some([0.0, 0.0, 0.0, 1.0].into()), // Background color
+                            Some(ClearValue::Depth(1.0)),      // Depth buffer
                         ],
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
@@ -611,7 +603,8 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                 .end_render_pass(Default::default())
                 .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
 
-            builder.build().unwrap()
+            let cb = builder.build().unwrap();
+            cb
         })
         .collect()
 }
@@ -620,31 +613,54 @@ fn create_render_pass(
     device: Arc<Device>,
     swapchain: Arc<Swapchain>,
 ) -> Result<Arc<RenderPass>, Validated<vulkano::VulkanError>> {
-    single_pass_renderpass!(
+    let render_pass = RenderPass::new(
         device,
-        attachments: {
-            rp: {
-                format: swapchain.image_format(),
-                samples: 1,
-                load_op: Clear,
-                store_op: Store,
-                initial_layout: PresentSrc,
-                final_layout: PresentSrc
-            },
-            ds: {
-                format: Format::D16_UNORM,
-                samples: 1,
-                load_op: Clear,
-                store_op: DontCare,
-                initial_layout: ImageLayout::Undefined,
-                final_layout: ImageLayout::DepthStencilAttachmentOptimal
-            }
+        RenderPassCreateInfo {
+            attachments: vec![
+                AttachmentDescription {
+                    format: swapchain.image_format(),
+                    samples: SampleCount::Sample1,
+                    load_op: AttachmentLoadOp::Clear,
+                    store_op: AttachmentStoreOp::Store,
+                    initial_layout: ImageLayout::PresentSrc,
+                    final_layout: ImageLayout::PresentSrc,
+                    ..Default::default()
+                },
+                AttachmentDescription {
+                    format: Format::D16_UNORM,
+                    samples: SampleCount::Sample1,
+                    load_op: AttachmentLoadOp::Clear,
+                    store_op: AttachmentStoreOp::DontCare,
+                    initial_layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    final_layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    ..Default::default()
+                },
+            ],
+            subpasses: vec![SubpassDescription {
+                color_attachments: vec![Some(AttachmentReference {
+                    attachment: 0,
+                    layout: ImageLayout::ColorAttachmentOptimal,
+                    ..Default::default()
+                })],
+                depth_stencil_attachment: Some(AttachmentReference {
+                    attachment: 1,
+                    layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    stencil_layout: None,
+                    aspects: ImageAspects::empty(),
+                    ..Default::default()
+                }),
+                depth_stencil_resolve_attachment: None,
+                depth_resolve_mode: None,
+                stencil_resolve_mode: None,
+                preserve_attachments: vec![],
+                ..Default::default()
+            }],
+            dependencies: vec![],
+            ..Default::default()
         },
-        pass: {
-            color: [rp],
-            depth_stencil: {ds},
-        },
-    )
+    );
+    println!("{:#?}", render_pass);
+    render_pass
 }
 
 fn create_frame_buffer(

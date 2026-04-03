@@ -193,7 +193,9 @@ impl ApplicationHandler for App {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let preferred_device_position: Option<usize> = args.iter().position(|f| f.to_ascii_lowercase() == "--device");
+    let preferred_device_position: Option<usize> = args
+        .iter()
+        .position(|f| f.to_ascii_lowercase() == "--device");
     let mut preferred_device: Option<String> = None;
     if preferred_device_position.is_some() {
         preferred_device = args.get(preferred_device_position.unwrap() + 1).cloned();
