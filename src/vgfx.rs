@@ -6,10 +6,11 @@ use color::AlphaColor;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
-use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+    AutoCommandBufferBuilder, CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel,
+    CommandBufferUsage, PrimaryAutoCommandBuffer, RecordingCommandBuffer, RenderPassBeginInfo,
     SubpassBeginInfo, SubpassContents,
 };
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
@@ -22,25 +23,22 @@ use vulkano::image::ImageLayout::{self, PresentSrc};
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{
-    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange,
-    ImageType, ImageUsage,
+    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{
     AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
     StandardMemoryAllocator,
 };
-use vulkano::memory::{MemoryPropertyFlags};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::depth_stencil::{
-    DepthState, DepthStencilState,
-};
+use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::graphics::{GraphicsPipelineCreateInfo, vertex_input};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
@@ -55,7 +53,7 @@ use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use winit::event_loop::EventLoop;
 use winit::platform::wayland::EventLoopExtWayland;
-use winit::window::Window;
+use winit::window::{self, Window};
 
 use crate::game::{GameEvent, RenderEvent};
 use crate::mesh::{Mesh3D, combine_vec};
@@ -80,7 +78,7 @@ pub struct WindowContext {
     pub window: Option<Arc<Window>>,
     pub vulkan_instance: Option<Arc<Instance>>,
     pub device: Option<Arc<Device>>,
-    command_buffers: Option<Vec<Arc<PrimaryAutoCommandBuffer>>>,
+    command_buffers: Option<Vec<Arc<CommandBuffer>>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     vertex_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
     index_buffer_allocator: Option<Arc<GenericMemoryAllocator<FreeListAllocator>>>,
@@ -198,7 +196,15 @@ pub fn resize_window(window_context: &mut WindowContext) {
         );
     }
 
-    let new_command_buffers = create_command_buffers(window_context);
+    let new_command_buffers = create_recording_command_buffer(
+        &window_context.vertex_buffer.as_ref().unwrap(),
+        &window_context.index_buffer.as_ref().unwrap(),
+        window_context.framebuffer.clone().unwrap(),
+        &window_context.pipelines,
+        &window_context.queues.as_ref().unwrap(),
+        &window_context.meshes,
+        window_context.command_buffer_allocator.clone().unwrap(),
+    );
     window_context.command_buffers = Some(new_command_buffers);
 }
 
@@ -248,7 +254,7 @@ pub fn redraw(window_context: &mut WindowContext) {
 
     let future = previous_future
         .join(acquire_future)
-        .then_execute(queue.clone(), command_buffers[image_i as usize].clone())
+        .then_execute(queue.clone(), command_buffers[image_i as usize])
         .unwrap()
         .then_swapchain_present(
             queue.clone(),
@@ -407,7 +413,7 @@ fn create_depth_image_view(
             allocator,
             ImageCreateInfo {
                 image_type: ImageType::Dim2d,
-                format: Format::D24_UNORM_S8_UINT,
+                format: Format::D16_UNORM,
                 extent: [extent[0], extent[1], 1],
                 usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
                 ..Default::default()
@@ -490,6 +496,117 @@ fn create_pipelines(window_context: &mut WindowContext) -> Vec<Arc<GraphicsPipel
     completed_pipelines
 }
 
+fn create_recording_command_buffer(
+    vertex_buffer: &Subbuffer<[Vertex3D]>,
+    index_buffer: &Subbuffer<[u32]>,
+    frame_buffer: Vec<Arc<Framebuffer>>,
+    pipelines: &Vec<Arc<GraphicsPipeline>>,
+    queues: &Vec<Arc<Queue>>,
+    meshes: &Vec<Arc<Mutex<Mesh3D>>>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+) -> Vec<Arc<CommandBuffer>> {
+    frame_buffer
+        .iter()
+        .map(|framebuffer| {
+            // Start recording a command buffer
+            let mut builder = RecordingCommandBuffer::new(
+                command_buffer_allocator.clone(),
+                queues[0].queue_family_index(),
+                CommandBufferLevel::Primary,
+                CommandBufferBeginInfo::default(),
+            )
+            .unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
+
+            // Begin render pass
+            unsafe {
+                builder
+                    .begin_render_pass(
+                        &RenderPassBeginInfo {
+                            clear_values: vec![
+                                Some([0.0, 0.0, 0.0, 1.0].into()), // Background color
+                                Some(ClearValue::Depth(1.0)),      // Depth buffer
+                            ],
+                            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                        },
+                        &SubpassBeginInfo {
+                            contents: SubpassContents::Inline,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap_or_else(|err| panic!("Could not begin render pass: {:?}", err));
+            }
+
+            // Bind the shader pipeline, verticies, and descriptor sets for each mesh
+            let mut vertex_slice_start: u64;
+            let mut vertex_slice_end: u64 = 0;
+            let mut index_slice_start: u64;
+            let mut index_slice_end: u64 = 0;
+            for (i, mesh_mutex) in meshes.iter().enumerate() {
+                let mesh = mesh_mutex.lock().unwrap();
+                vertex_slice_start = vertex_slice_end;
+                vertex_slice_end = vertex_slice_start + mesh.verticies.len() as u64;
+                index_slice_start = index_slice_end;
+                index_slice_end = index_slice_start + mesh.indicies.len() as u64;
+
+                // Slices must be within buffers
+                assert!(vertex_buffer.size() >= vertex_slice_end * size_of::<Vertex3D>() as u64);
+                assert!(index_buffer.size() >= index_slice_end * size_of::<u32>() as u64);
+
+                let vertex_buffer_slice = vertex_buffer
+                    .clone()
+                    .slice(vertex_slice_start..vertex_slice_end);
+
+                let (descriptor_set, offsets) =
+                    mesh.shader.descriptor_sets.get(&0).unwrap().as_ref();
+
+                unsafe {
+                    builder
+                        .bind_pipeline_graphics(pipelines[i].as_ref())
+                        .unwrap_or_else(|err| panic!("Could not bind graphics pipeline: {:?}", err))
+                        .bind_vertex_buffers(0, &[vertex_buffer_slice.into_bytes()])
+                        .unwrap_or_else(|err| panic!("Could not bind vertex buffers: {:?}", err))
+                        .bind_index_buffer(&IndexBuffer::U32(index_buffer.clone()))
+                        .unwrap_or_else(|err| panic!("Could not bind index buffers: {:?}", err))
+                        .bind_descriptor_sets(
+                            PipelineBindPoint::Graphics,
+                            pipelines[i].layout(),
+                            0,
+                            &[descriptor_set.as_raw()],
+                            offsets,
+                        )
+                        .unwrap_or_else(|err| panic!("Could not bind descriptor sets: {:?}", err));
+                }
+
+                // SAFETY:
+                // Draw functions are marked as unsafe in vulkano as shader safety needs to be followed
+                // https://docs.rs/vulkano/latest/vulkano/shader/index.html#safety
+                unsafe {
+                    // We have access to the entire vertex buffer, but should only draw the verticies for the mesh who's shader this pipeline represents
+                    // Right now this assumes every mesh has the same number of verticies
+                    builder
+                        .draw_indexed(
+                            mesh.indicies.len() as u32,
+                            1,
+                            index_slice_start as u32,
+                            0,
+                            0,
+                        )
+                        .unwrap_or_else(|err| panic!("Could not draw: {:?}", err));
+                }
+            }
+
+            unsafe {
+            builder
+                .end_render_pass(&Default::default())
+                .unwrap_or_else(|err| panic!("Could not end render pass: {:?}", err));
+            }
+
+            // Stop recording
+            unsafe { Arc::new(builder.end().unwrap()) }
+        })
+        .collect()
+}
+
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     let pipelines = &window_context.pipelines;
     let vertex_buffer = window_context
@@ -523,7 +640,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
                     RenderPassBeginInfo {
                         clear_values: vec![
                             Some([0.0, 0.0, 0.0, 1.0].into()), // Background color
-                            Some(ClearValue::DepthStencil((1.0, 1))),      // Depth buffer
+                            Some(ClearValue::Depth(1.0)),      // Depth buffer
                         ],
                         ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                     },
@@ -612,7 +729,7 @@ fn create_render_pass(
                 final_layout: PresentSrc
             },
             ds: {
-                format: Format::D24_UNORM_S8_UINT,
+                format: Format::D16_UNORM,
                 samples: 1,
                 load_op: Clear,
                 store_op: DontCare,
@@ -780,7 +897,15 @@ pub fn init_vulkano(window_context: &mut WindowContext) {
     // Put all verticies of all meshes into the vertex buffer
     update_vertex_buffer(window_context);
 
-    let command_buffers = create_command_buffers(window_context);
+    let command_buffers = create_recording_command_buffer(
+        &window_context.vertex_buffer.as_ref().unwrap(),
+        &window_context.index_buffer.as_ref().unwrap(),
+        window_context.framebuffer.clone().unwrap(),
+        &window_context.pipelines,
+        &window_context.queues.as_ref().unwrap(),
+        &window_context.meshes,
+        window_context.command_buffer_allocator.clone().unwrap(),
+    );
     println!("Successfully created command buffer");
     window_context.command_buffers = Some(command_buffers);
 }
@@ -866,5 +991,13 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
 // This is called when we only need to update shaders and perspective
 pub fn update_pipelines(window_context: &mut WindowContext) {
     window_context.pipelines = create_pipelines(window_context);
-    window_context.command_buffers = Some(create_command_buffers(window_context));
+    window_context.command_buffers = Some(create_recording_command_buffer(
+        &window_context.vertex_buffer.as_ref().unwrap(),
+        &window_context.index_buffer.as_ref().unwrap(),
+        window_context.framebuffer.clone().unwrap(),
+        &window_context.pipelines,
+        &window_context.queues.as_ref().unwrap(),
+        &window_context.meshes,
+        window_context.command_buffer_allocator.clone().unwrap(),
+    ););
 }
