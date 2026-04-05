@@ -79,8 +79,8 @@ pub struct WindowContext {
     pub window: Arc<Window>,
     pub vulkan_instance: Arc<Instance>,
     pub device: Arc<Device>,
-    command_buffers: Vec<Arc<CommandBuffer>>,
-    task_graph: ExecutableTaskGraph<Self>,
+    command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
+    //task_graph: ExecutableTaskGraph<Self>,
     resources: Arc<Resources>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
@@ -154,6 +154,7 @@ impl WindowContext {
         // Create the vulkan device and associated queues
         let (device, queues) = create_device(selected_device.clone())
             .unwrap_or_else(|err| panic!("Could not create graphics device: {:?}", err));
+        let queues: Vec<Arc<Queue>> = queues.collect();
 
         let resources = Resources::new(&device, &ResourcesCreateInfo::default());
 
@@ -166,28 +167,32 @@ impl WindowContext {
             .physical_device()
             .surface_capabilities(&surface, Default::default())
             .unwrap_or_else(|err| panic!("Failed to get surface capabilities: {:?}", err));
-        let (swapchain, images) = create_swapchain(device.clone(), surface, surface_capabilities)
-            .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
+        let (swapchain, images) =
+            create_swapchain(device.clone(), surface.clone(), surface_capabilities)
+                .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
 
         // Initialize task graph
         let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&resources.clone(), 16, 16);
 
         // Allocators
-        let image_allocator = Arc::new(StandardMemoryAllocator::new_default(device));
-        let vertex_buffer_allocator = Arc::new(StandardMemoryAllocator::new_default(device));
-        let index_buffer_allocator = Arc::new(StandardMemoryAllocator::new_default(device));
+        let image_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let vertex_buffer_allocator =
+            Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let index_buffer_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
-            device,
+            device.clone(),
             Default::default(),
         ));
 
         // Create depth buffer
-        let depth_buffer = create_depth_image_view(image_allocator, window.inner_size().into())
-            .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
+        let depth_buffer =
+            create_depth_image_view(image_allocator.clone(), window.inner_size().into())
+                .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
 
         // Create render pass
-        let render_pass = create_render_pass(device, swapchain.image_format(), Format::D16_UNORM)
-            .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
+        let render_pass =
+            create_render_pass(device.clone(), swapchain.image_format(), Format::D16_UNORM)
+                .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
 
         // Create frame buffer
         let framebuffer = create_frame_buffer(
@@ -204,18 +209,21 @@ impl WindowContext {
         };
 
         // Create pipelines
-        let pipelines = create_pipelines(device, vec![], render_pass, viewport);
+        let pipelines = create_pipelines(device.clone(), vec![], render_pass.clone(), viewport.clone());
 
-        let (vertex_buffer, index_buffer) =
-            update_vertex_buffer(vec![], vertex_buffer_allocator, index_buffer_allocator);
+        let (vertex_buffer, index_buffer) = update_vertex_buffer(
+            vec![],
+            vertex_buffer_allocator.clone(),
+            index_buffer_allocator.clone(),
+        );
 
         // Create command buffers
-        let command_buffers = create_recording_command_buffer(
+        let command_buffers = create_command_buffers(
             &vertex_buffer,
             &index_buffer,
             framebuffer.clone(),
             &pipelines,
-            &queues.collect(),
+            &queues,
             &vec![],
             command_buffer_allocator.clone(),
         );
@@ -226,14 +234,14 @@ impl WindowContext {
             window,
             device,
             command_buffers,
-            task_graph,
+            //task_graph,
             resources,
             command_buffer_allocator,
             vertex_buffer_allocator,
             index_buffer_allocator,
             image_allocator,
-            queues: queues.collect(),
-            pipelines: todo!(),
+            queues: queues,
+            pipelines,
             vertex_buffer,
             index_buffer,
             depth_buffer,
@@ -243,14 +251,14 @@ impl WindowContext {
             images,
             render_pass,
             meshes: vec![],
-            previous_fence_i: todo!(),
-            should_resize: todo!(),
-            requested_resize: todo!(),
-            last_resized: todo!(),
-            recreate_swapchain: todo!(),
+            previous_fence_i: 0,
+            should_resize: false,
+            requested_resize: false,
+            last_resized: None,
+            recreate_swapchain: false,
             viewport,
-            game_thread_receiver: todo!(),
-            game_thread_sender: todo!(),
+            game_thread_receiver: None,
+            game_thread_sender: None,
         }
     }
 
@@ -319,7 +327,7 @@ pub fn resize_window(window_context: &mut WindowContext) {
         );
     }
 
-    let new_command_buffers = create_recording_command_buffer(
+    let new_command_buffers = create_command_buffers(
         &window_context.vertex_buffer,
         &window_context.index_buffer,
         window_context.framebuffer.clone(),
@@ -332,9 +340,9 @@ pub fn resize_window(window_context: &mut WindowContext) {
 }
 
 pub fn redraw(window_context: &mut WindowContext) {
-    let queues = window_context.queues;
+    let queues = &window_context.queues;
     let queue = &queues[0];
-    let command_buffers = window_context.command_buffers;
+    let command_buffers = &window_context.command_buffers;
     let swapchain = window_context.swapchain.clone();
     let images = window_context.images.clone();
 
@@ -377,7 +385,7 @@ pub fn redraw(window_context: &mut WindowContext) {
 
     let future = previous_future
         .join(acquire_future)
-        .then_execute(queue.clone(), command_buffers[image_i as usize])
+        .then_execute(queue.clone(), command_buffers[image_i as usize].clone())
         .unwrap()
         .then_swapchain_present(
             queue.clone(),
@@ -734,19 +742,21 @@ fn create_recording_command_buffer(
         .collect()
 }
 
-fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    let pipelines = &window_context.pipelines;
-    let vertex_buffer = &window_context.vertex_buffer;
-    let index_buffer = &window_context.index_buffer;
-
-    window_context
-        .framebuffer
-        .clone()
+fn create_command_buffers(
+    vertex_buffer: &Subbuffer<[Vertex3D]>,
+    index_buffer: &Subbuffer<[u32]>,
+    frame_buffer: Vec<Arc<Framebuffer>>,
+    pipelines: &Vec<Arc<GraphicsPipeline>>,
+    queues: &Vec<Arc<Queue>>,
+    meshes: &Vec<Arc<Mutex<Mesh3D>>>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
+    frame_buffer
         .iter()
         .map(|framebuffer| {
             let mut builder = AutoCommandBufferBuilder::primary(
-                window_context.command_buffer_allocator.clone(),
-                window_context.queues[0].queue_family_index(),
+                command_buffer_allocator.clone(),
+                queues[0].queue_family_index(),
                 CommandBufferUsage::MultipleSubmit,
             )
             .unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
@@ -772,7 +782,7 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
             let mut vertex_slice_end: u64 = 0;
             let mut index_slice_start: u64;
             let mut index_slice_end: u64 = 0;
-            for (i, mesh_mutex) in window_context.meshes.iter().enumerate() {
+            for (i, mesh_mutex) in meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
                 vertex_slice_start = vertex_slice_end;
                 vertex_slice_end = vertex_slice_start + mesh.verticies.len() as u64;
@@ -968,7 +978,7 @@ pub fn update_pipelines(window_context: &mut WindowContext) {
         window_context.render_pass.clone(),
         window_context.viewport.clone(),
     );
-    window_context.command_buffers = create_recording_command_buffer(
+    window_context.command_buffers = create_command_buffers(
         &window_context.vertex_buffer,
         &window_context.index_buffer,
         window_context.framebuffer.clone(),
