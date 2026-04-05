@@ -2,12 +2,12 @@ mod game;
 mod mesh;
 pub mod shader;
 mod vgfx;
+mod scene;
 
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use vgfx::WindowContext;
-use vgfx::{recreate_swapchain, redraw, resize_window};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
@@ -19,7 +19,7 @@ use winit::{
 
 use crate::game::{GameData, RenderEvent};
 use crate::vgfx::update_vertex_buffer;
-use crate::vgfx::{Platform, update_pipelines};
+use crate::vgfx::{Platform};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -149,7 +149,7 @@ impl ApplicationHandler for App {
 
                         // Runs if shaders or perspective is updated
                         if should_update_pipelines {
-                            update_pipelines(window_context);
+                            //update_pipelines(window_context);
                         }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing
@@ -166,15 +166,15 @@ impl ApplicationHandler for App {
 
                         if window_context.should_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
-                            recreate_swapchain(window_context);
+                            //recreate_swapchain(window_context);
 
                             if window_context.should_resize {
                                 window_context.should_resize = false;
-                                resize_window(window_context);
+                                //resize_window(window_context);
                             }
                         }
 
-                        redraw(window_context);
+                        //redraw(window_context);
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {

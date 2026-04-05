@@ -1,3 +1,4 @@
+use core::task;
 use std::collections::TryReserveError;
 
 use std::sync::{Arc, Mutex};
@@ -28,8 +29,8 @@ use vulkano::image::{
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{
-    AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
-    StandardMemoryAllocator,
+    AllocationCreateInfo, DeviceLayout, FreeListAllocator, GenericMemoryAllocator,
+    MemoryTypeFilter, StandardMemoryAllocator,
 };
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::depth_stencil::{DepthState, DepthStencilState};
@@ -51,15 +52,22 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
-use vulkano_taskgraph::graph::{ExecutableTaskGraph, TaskGraph};
-use vulkano_taskgraph::resource::{Resources, ResourcesCreateInfo};
+use vulkano_taskgraph::Id;
+use vulkano_taskgraph::graph::{AttachmentInfo, CompileInfo, ExecutableTaskGraph, TaskGraph};
+use vulkano_taskgraph::resource::{
+    AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::wayland::{ActiveEventLoopExtWayland, EventLoopExtWayland};
 use winit::window::{self, Window};
 
 use crate::game::{GameEvent, RenderEvent};
 use crate::mesh::{Mesh3D, combine_vec};
+use crate::scene::SceneTask;
 use crate::shader::Vertex3D;
+
+const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
 #[derive(Default, PartialEq)]
 pub enum Platform {
@@ -79,30 +87,31 @@ pub struct WindowContext {
     pub window: Arc<Window>,
     pub vulkan_instance: Arc<Instance>,
     pub device: Arc<Device>,
-    command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
-    //task_graph: ExecutableTaskGraph<Self>,
-    resources: Arc<Resources>,
+    //command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
+    task_graph: ExecutableTaskGraph<Self>,
+    pub resources: Arc<Resources>,
+    pub flight_id: Id<Flight>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
     pub index_buffer_allocator: Arc<StandardMemoryAllocator>,
     image_allocator: Arc<StandardMemoryAllocator>,
     pub queues: Vec<Arc<Queue>>,
-    pipelines: Vec<Arc<GraphicsPipeline>>,
+    //pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Subbuffer<[Vertex3D]>,
     index_buffer: Subbuffer<[u32]>,
     depth_buffer: Arc<ImageView>,
-    framebuffer: Vec<Arc<Framebuffer>>,
-    swapchain: Arc<Swapchain>,
+    //framebuffer: Vec<Arc<Framebuffer>>,
+    //swapchain: Arc<Swapchain>,
     surface: Arc<Surface>,
-    images: Vec<Arc<Image>>,
-    render_pass: Arc<RenderPass>,
+    //images: Vec<Arc<Image>>,
+    //render_pass: Arc<RenderPass>,
     pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
     previous_fence_i: u32,
     pub should_resize: bool,
     pub requested_resize: bool,
     pub last_resized: Option<Instant>,
     pub recreate_swapchain: bool,
-    viewport: Viewport,
+    pub viewport: Viewport,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
     pub game_thread_sender: Option<Sender<GameEvent>>,
     pub platform: Platform,
@@ -156,8 +165,6 @@ impl WindowContext {
             .unwrap_or_else(|err| panic!("Could not create graphics device: {:?}", err));
         let queues: Vec<Arc<Queue>> = queues.collect();
 
-        let resources = Resources::new(&device, &ResourcesCreateInfo::default());
-
         // Create the surface fom the window provided by winit
         let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
             .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
@@ -167,12 +174,72 @@ impl WindowContext {
             .physical_device()
             .surface_capabilities(&surface, Default::default())
             .unwrap_or_else(|err| panic!("Failed to get surface capabilities: {:?}", err));
-        let (swapchain, images) =
-            create_swapchain(device.clone(), surface.clone(), surface_capabilities)
-                .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
+        //let (swapchain, images) =
+        //    create_swapchain(device.clone(), surface.clone(), surface_capabilities.clone())
+        //        .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
+        let (swapchain_format, _) = get_format_and_colorspace(device.clone(), surface.clone());
 
         // Initialize task graph
+        let resources = Resources::new(&device, &ResourcesCreateInfo::default());
+        let flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&resources.clone(), 16, 16);
+
+        let swapchain_id = resources
+            .create_swapchain(
+                flight_id,
+                surface.clone(),
+                SwapchainCreateInfo {
+                    min_image_count: surface_capabilities
+                        .min_image_count
+                        .max(MIN_SWAPCHAIN_IMAGES),
+                    image_format: swapchain_format,
+                    image_extent: window.inner_size().into(),
+                    image_usage: ImageUsage::COLOR_ATTACHMENT,
+                    composite_alpha: surface_capabilities
+                        .supported_composite_alpha
+                        .into_iter()
+                        .next()
+                        .unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo {
+            image_format: swapchain_format,
+            ..Default::default()
+        });
+
+        let virtual_framebuffer_id = task_graph.add_framebuffer();
+
+        let scene_node_id = task_graph
+            .create_task_node(
+                "Scene",
+                vulkano_taskgraph::QueueFamilyType::Graphics,
+                SceneTask::new(vec![], resources.clone(), queues.clone(), flight_id),
+            )
+            .framebuffer(virtual_framebuffer_id)
+            .color_attachment(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_WRITE,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo {
+                    clear: true,
+                    format: Format::R32_UINT,
+                    ..Default::default()
+                },
+            )
+            .build();
+
+        let mut task_graph = unsafe {
+            task_graph.compile(&CompileInfo {
+                queues: &[&queues[0]],
+                present_queue: Some(&queues[0]),
+                flight_id: flight_id,
+                ..Default::default()
+            })
+        }.unwrap();
+
 
         // Allocators
         let image_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -190,17 +257,17 @@ impl WindowContext {
                 .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
 
         // Create render pass
-        let render_pass =
-            create_render_pass(device.clone(), swapchain.image_format(), Format::D16_UNORM)
-                .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
+        //let render_pass =
+        //    create_render_pass(device.clone(), swapchain.image_format(), Format::D16_UNORM)
+        //        .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
 
         // Create frame buffer
-        let framebuffer = create_frame_buffer(
-            render_pass.clone(),
-            &images,
-            depth_buffer.clone(),
-            swapchain.image_format(),
-        );
+        //let framebuffer = create_frame_buffer(
+        //    render_pass.clone(),
+        //    &images,
+        //    depth_buffer.clone(),
+        //    swapchain.image_format(),
+        //);
 
         let viewport = Viewport {
             offset: [0.0, 0.0],
@@ -209,7 +276,12 @@ impl WindowContext {
         };
 
         // Create pipelines
-        let pipelines = create_pipelines(device.clone(), vec![], render_pass.clone(), viewport.clone());
+        //let pipelines = create_pipelines(
+        //    device.clone(),
+        //    vec![],
+        //    render_pass.clone(),
+        //    viewport.clone(),
+        //);
 
         let (vertex_buffer, index_buffer) = update_vertex_buffer(
             vec![],
@@ -218,38 +290,39 @@ impl WindowContext {
         );
 
         // Create command buffers
-        let command_buffers = create_command_buffers(
-            &vertex_buffer,
-            &index_buffer,
-            framebuffer.clone(),
-            &pipelines,
-            &queues,
-            &vec![],
-            command_buffer_allocator.clone(),
-        );
+        //let command_buffers = create_command_buffers(
+        //    &vertex_buffer,
+        //    &index_buffer,
+        //    framebuffer.clone(),
+        //    &pipelines,
+        //    &queues,
+        //    &vec![],
+        //    command_buffer_allocator.clone(),
+        //);
 
         Self {
             vulkan_instance: vulkan_instance,
             platform: platform,
             window,
             device,
-            command_buffers,
-            //task_graph,
+            //command_buffers,
+            task_graph,
             resources,
+            flight_id,
             command_buffer_allocator,
             vertex_buffer_allocator,
             index_buffer_allocator,
             image_allocator,
             queues: queues,
-            pipelines,
+            //pipelines,
             vertex_buffer,
             index_buffer,
             depth_buffer,
-            framebuffer,
-            swapchain,
+            //framebuffer,
+            //swapchain,
             surface,
-            images,
-            render_pass,
+            //images,
+            //render_pass,
             meshes: vec![],
             previous_fence_i: 0,
             should_resize: false,
@@ -270,6 +343,7 @@ impl WindowContext {
     }
 }
 
+/*
 // A swapchain gets recreated when the window is resized, the previous swapchain image reported as suboptimal,
 // or fetching the current swapchain image failed for whatever reason
 pub fn recreate_swapchain(window_context: &mut WindowContext) {
@@ -312,7 +386,8 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
     window_context.framebuffer = new_framebuffers;
     window_context.images = new_images;
 }
-
+*/
+/*
 pub fn resize_window(window_context: &mut WindowContext) {
     window_context.viewport.extent = window_context.window.inner_size().into();
     window_context.pipelines = create_pipelines(
@@ -338,7 +413,8 @@ pub fn resize_window(window_context: &mut WindowContext) {
     );
     window_context.command_buffers = new_command_buffers;
 }
-
+*/
+/*
 pub fn redraw(window_context: &mut WindowContext) {
     let queues = &window_context.queues;
     let queue = &queues[0];
@@ -407,6 +483,7 @@ pub fn redraw(window_context: &mut WindowContext) {
 
     window_context.previous_fence_i = image_i;
 }
+*/
 
 fn get_device_total_memory(device: &Arc<PhysicalDevice>) -> u64 {
     let mut total_memory = 0;
@@ -970,6 +1047,7 @@ pub fn update_vertex_buffer(
     (vertex_buffer, index_buffer)
 }
 
+/*
 // This is called when we only need to update shaders and perspective
 pub fn update_pipelines(window_context: &mut WindowContext) {
     window_context.pipelines = create_pipelines(
@@ -988,3 +1066,4 @@ pub fn update_pipelines(window_context: &mut WindowContext) {
         window_context.command_buffer_allocator.clone(),
     );
 }
+*/

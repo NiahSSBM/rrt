@@ -65,7 +65,7 @@ impl AdditionalShaderProperties {
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone,
+    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
 )]
 #[repr(C)]
 pub struct Vertex2D {
@@ -76,7 +76,7 @@ pub struct Vertex2D {
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone,
+    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
 )]
 #[repr(C)]
 pub struct Vertex3D {
