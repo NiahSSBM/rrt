@@ -42,7 +42,7 @@ use vulkano::pipeline::graphics::{GraphicsPipelineCreateInfo, vertex_input};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
 };
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::render_pass::{self, Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
 use vulkano::shader::ShaderStage;
 use vulkano::swapchain::{
     self, ColorSpace, CompositeAlpha, FullScreenExclusive, PresentMode, Surface,
@@ -53,8 +53,8 @@ use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use vulkano_taskgraph::graph::{ExecutableTaskGraph, TaskGraph};
 use vulkano_taskgraph::resource::{Resources, ResourcesCreateInfo};
-use winit::event_loop::EventLoop;
-use winit::platform::wayland::EventLoopExtWayland;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::platform::wayland::{ActiveEventLoopExtWayland, EventLoopExtWayland};
 use winit::window::{self, Window};
 
 use crate::game::{GameEvent, RenderEvent};
@@ -76,27 +76,27 @@ pub enum Platform {
 }
 
 pub struct WindowContext {
-    pub window: Option<Arc<Window>>,
-    pub vulkan_instance: Option<Arc<Instance>>,
+    pub window: Arc<Window>,
+    pub vulkan_instance: Arc<Instance>,
     pub device: Arc<Device>,
-    command_buffers: Option<Vec<Arc<CommandBuffer>>>,
+    command_buffers: Vec<Arc<CommandBuffer>>,
     task_graph: ExecutableTaskGraph<Self>,
     resources: Arc<Resources>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
-    index_buffer_allocator: Arc<StandardMemoryAllocator>,
+    pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
+    pub index_buffer_allocator: Arc<StandardMemoryAllocator>,
     image_allocator: Arc<StandardMemoryAllocator>,
     pub queues: Vec<Arc<Queue>>,
     pipelines: Vec<Arc<GraphicsPipeline>>,
     vertex_buffer: Subbuffer<[Vertex3D]>,
-    index_buffer: Option<Subbuffer<[u32]>>,
+    index_buffer: Subbuffer<[u32]>,
     depth_buffer: Arc<ImageView>,
-    framebuffer: Option<Vec<Arc<Framebuffer>>>,
-    swapchain: Option<Arc<Swapchain>>,
-    surface: Option<Arc<Surface>>,
-    images: Option<Vec<Arc<Image>>>,
-    render_pass: Option<Arc<RenderPass>>,
-    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    framebuffer: Vec<Arc<Framebuffer>>,
+    swapchain: Arc<Swapchain>,
+    surface: Arc<Surface>,
+    images: Vec<Arc<Image>>,
+    render_pass: Arc<RenderPass>,
+    pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
     previous_fence_i: u32,
     pub should_resize: bool,
     pub requested_resize: bool,
@@ -109,7 +109,7 @@ pub struct WindowContext {
 }
 
 impl WindowContext {
-    pub fn new(event_loop: &EventLoop<()>) -> Self {
+    pub fn new(event_loop: &ActiveEventLoop) -> Self {
         let vulkan_libary = VulkanLibrary::new()
             .unwrap_or_else(|err| panic!("Couldn't load Vulkan library: {:?}", err));
         let vulkan_extensions = Surface::required_extensions(event_loop).unwrap_or_else(|err| {
@@ -130,6 +130,12 @@ impl WindowContext {
             false => Platform::X11,
         };
 
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes())
+                .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
+        );
+
         // Query available physical devices and select one
         let available_devices = vulkan_instance.enumerate_physical_devices().unwrap();
         for physical_device in vulkan_instance.enumerate_physical_devices().unwrap() {
@@ -148,9 +154,20 @@ impl WindowContext {
         // Create the vulkan device and associated queues
         let (device, queues) = create_device(selected_device.clone())
             .unwrap_or_else(|err| panic!("Could not create graphics device: {:?}", err));
-        println!("Successfully created graphics device");
 
         let resources = Resources::new(&device, &ResourcesCreateInfo::default());
+
+        // Create the surface fom the window provided by winit
+        let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
+            .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
+
+        // Create the swapchain and images
+        let surface_capabilities = device
+            .physical_device()
+            .surface_capabilities(&surface, Default::default())
+            .unwrap_or_else(|err| panic!("Failed to get surface capabilities: {:?}", err));
+        let (swapchain, images) = create_swapchain(device.clone(), surface, surface_capabilities)
+            .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
 
         // Initialize task graph
         let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&resources.clone(), 16, 16);
@@ -165,15 +182,50 @@ impl WindowContext {
         ));
 
         // Create depth buffer
-        let depth_buffer = create_depth_image_view(image_allocator, [800, 600])
+        let depth_buffer = create_depth_image_view(image_allocator, window.inner_size().into())
             .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
 
+        // Create render pass
+        let render_pass = create_render_pass(device, swapchain.image_format(), Format::D16_UNORM)
+            .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
+
+        // Create frame buffer
+        let framebuffer = create_frame_buffer(
+            render_pass.clone(),
+            &images,
+            depth_buffer.clone(),
+            swapchain.image_format(),
+        );
+
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: window.inner_size().into(),
+            depth_range: 0.0..=1.0,
+        };
+
+        // Create pipelines
+        let pipelines = create_pipelines(device, vec![], render_pass, viewport);
+
+        let (vertex_buffer, index_buffer) =
+            update_vertex_buffer(vec![], vertex_buffer_allocator, index_buffer_allocator);
+
+        // Create command buffers
+        let command_buffers = create_recording_command_buffer(
+            &vertex_buffer,
+            &index_buffer,
+            framebuffer.clone(),
+            &pipelines,
+            &queues.collect(),
+            &vec![],
+            command_buffer_allocator.clone(),
+        );
+
         Self {
-            vulkan_instance: Some(vulkan_instance.clone()),
+            vulkan_instance: vulkan_instance,
             platform: platform,
-            window: todo!(),
+            window,
             device,
-            command_buffers: todo!(),
+            command_buffers,
             task_graph,
             resources,
             command_buffer_allocator,
@@ -182,21 +234,21 @@ impl WindowContext {
             image_allocator,
             queues: queues.collect(),
             pipelines: todo!(),
-            vertex_buffer: todo!(),
-            index_buffer: todo!(),
+            vertex_buffer,
+            index_buffer,
             depth_buffer,
-            framebuffer: todo!(),
-            swapchain: todo!(),
-            surface: todo!(),
-            images: todo!(),
-            render_pass: todo!(),
-            meshes: todo!(),
+            framebuffer,
+            swapchain,
+            surface,
+            images,
+            render_pass,
+            meshes: vec![],
             previous_fence_i: todo!(),
             should_resize: todo!(),
             requested_resize: todo!(),
             last_resized: todo!(),
             recreate_swapchain: todo!(),
-            viewport: todo!(),
+            viewport,
             game_thread_receiver: todo!(),
             game_thread_sender: todo!(),
         }
@@ -216,48 +268,51 @@ pub fn recreate_swapchain(window_context: &mut WindowContext) {
     // Make sure we have a compatible image format and colorspace for the new swapchain and framebuffer before creating them
     let (format, colorspace) = get_format_and_colorspace(
         window_context.device.clone(),
-        window_context.surface.clone().unwrap(),
+        window_context.surface.clone(),
     );
 
     // Recreate our swapchain using the previous one, only changing the size, colorspace, and image format if applicable
     let (new_swapchain, new_images) = window_context
         .swapchain
-        .as_ref()
-        .unwrap()
         .recreate(SwapchainCreateInfo {
-            image_extent: window_context.window.as_ref().unwrap().inner_size().into(),
+            image_extent: window_context.window.inner_size().into(),
             image_color_space: colorspace,
             image_format: format,
-            ..window_context.swapchain.as_ref().unwrap().create_info()
+            ..window_context.swapchain.create_info()
         })
         .unwrap_or_else(|err| panic!("Failed to create new swapchain: {:?}", err));
 
     // This might not be necessary
     let depth_buffer = create_depth_image_view(
-        window_context.image_allocator.as_ref().unwrap().clone(),
+        window_context.image_allocator.clone(),
         [
             window_context.viewport.extent[0] as u32,
             window_context.viewport.extent[1] as u32,
         ],
     )
     .unwrap_or_else(|err| panic!("Could not create depth buffer: {:?}", err));
-    window_context.depth_buffer = Some(depth_buffer.clone());
+    window_context.depth_buffer = depth_buffer.clone();
 
     let new_framebuffers = create_frame_buffer(
-        window_context.render_pass.clone().unwrap(),
+        window_context.render_pass.clone(),
         &new_images,
         depth_buffer,
         format,
     );
 
-    window_context.swapchain = Some(new_swapchain);
-    window_context.framebuffer = Some(new_framebuffers);
-    window_context.images = Some(new_images);
+    window_context.swapchain = new_swapchain;
+    window_context.framebuffer = new_framebuffers;
+    window_context.images = new_images;
 }
 
 pub fn resize_window(window_context: &mut WindowContext) {
-    window_context.viewport.extent = window_context.window.as_ref().unwrap().inner_size().into();
-    window_context.pipelines = create_pipelines(window_context);
+    window_context.viewport.extent = window_context.window.inner_size().into();
+    window_context.pipelines = create_pipelines(
+        window_context.device.clone(),
+        vec![],
+        window_context.render_pass.clone(),
+        window_context.viewport.clone(),
+    );
     if window_context.pipelines.is_empty() {
         println!(
             "Warning: No pipelines were created when resizing window! Are there any meshes to draw?"
@@ -265,23 +320,23 @@ pub fn resize_window(window_context: &mut WindowContext) {
     }
 
     let new_command_buffers = create_recording_command_buffer(
-        &window_context.vertex_buffer.as_ref().unwrap(),
-        &window_context.index_buffer.as_ref().unwrap(),
-        window_context.framebuffer.clone().unwrap(),
+        &window_context.vertex_buffer,
+        &window_context.index_buffer,
+        window_context.framebuffer.clone(),
         &window_context.pipelines,
         &window_context.queues,
         &window_context.meshes,
-        window_context.command_buffer_allocator.clone().unwrap(),
+        window_context.command_buffer_allocator.clone(),
     );
-    window_context.command_buffers = Some(new_command_buffers);
+    window_context.command_buffers = new_command_buffers;
 }
 
 pub fn redraw(window_context: &mut WindowContext) {
     let queues = window_context.queues;
     let queue = &queues[0];
-    let command_buffers = window_context.command_buffers.as_ref().unwrap();
-    let swapchain = window_context.swapchain.clone().unwrap();
-    let images = window_context.images.clone().unwrap();
+    let command_buffers = window_context.command_buffers;
+    let swapchain = window_context.swapchain.clone();
+    let images = window_context.images.clone();
 
     let (image_i, suboptimal, acquire_future) =
         match swapchain::acquire_next_image(swapchain.clone(), None).map_err(Validated::unwrap) {
@@ -497,7 +552,12 @@ fn create_depth_image_view(
 // Cache already created shaders so they don't need their own pipeline
 // Batch host/device buffer copies so it's not copied for every mesh
 // Execute the command buffer once, instead of for each mesh
-fn create_pipelines(device: Arc<Device>, meshes: Vec<Arc<Mutex<Mesh3D>>>, render_pass: Arc<RenderPass>, viewport: Viewport) -> Vec<Arc<GraphicsPipeline>> {
+fn create_pipelines(
+    device: Arc<Device>,
+    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    render_pass: Arc<RenderPass>,
+    viewport: Viewport,
+) -> Vec<Arc<GraphicsPipeline>> {
     let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
 
     if meshes.is_empty() {
@@ -530,8 +590,7 @@ fn create_pipelines(device: Arc<Device>, meshes: Vec<Arc<Mutex<Mesh3D>>>, render
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
 
-        let subpass =
-            Subpass::from(render_pass.clone(), 0).unwrap();
+        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
         let new_pipeline = GraphicsPipeline::new(
             device.clone(),
@@ -677,28 +736,17 @@ fn create_recording_command_buffer(
 
 fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
     let pipelines = &window_context.pipelines;
-    let vertex_buffer = window_context
-        .vertex_buffer
-        .as_ref()
-        .expect("ERROR: There's no vertex buffer!");
-    let index_buffer = window_context
-        .index_buffer
-        .as_ref()
-        .expect("ERROR: There's no index buffer!");
+    let vertex_buffer = &window_context.vertex_buffer;
+    let index_buffer = &window_context.index_buffer;
 
     window_context
         .framebuffer
         .clone()
-        .expect("ERROR: There's no frame buffer!")
         .iter()
         .map(|framebuffer| {
             let mut builder = AutoCommandBufferBuilder::primary(
-                window_context
-                    .command_buffer_allocator
-                    .as_ref()
-                    .unwrap()
-                    .clone(),
-                window_context.queues.as_ref().unwrap()[0].queue_family_index(),
+                window_context.command_buffer_allocator.clone(),
+                window_context.queues[0].queue_family_index(),
                 CommandBufferUsage::MultipleSubmit,
             )
             .unwrap_or_else(|err| panic!("Could not create command buffer: {:?}", err));
@@ -783,13 +831,14 @@ fn create_command_buffers(window_context: &WindowContext) -> Vec<Arc<PrimaryAuto
 
 fn create_render_pass(
     device: Arc<Device>,
-    swapchain: Arc<Swapchain>,
+    primary_format: Format,
+    depth_format: Format,
 ) -> Result<Arc<RenderPass>, Validated<vulkano::VulkanError>> {
     single_pass_renderpass!(
         device,
         attachments: {
             rp: {
-                format: swapchain.image_format(),
+                format: primary_format,
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,
@@ -797,7 +846,7 @@ fn create_render_pass(
                 final_layout: PresentSrc
             },
             ds: {
-                format: Format::D16_UNORM,
+                format: depth_format,
                 samples: 1,
                 load_op: Clear,
                 store_op: DontCare,
@@ -856,105 +905,15 @@ fn create_frame_buffer(
         .collect()
 }
 
-pub fn init_vulkano(window_context: &mut WindowContext) {
-    let window = window_context
-        .window
-        .clone()
-        .expect("Error: Window needs to be set BEFORE vulkan is initialized.");
-    let vulkan_instance = window_context
-        .vulkan_instance
-        .as_ref()
-        .expect("Attempted to initialize vulkan with no vulkan instance!")
-        .clone();
-
-    // Create the surface fom the window provided by winit
-    let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
-        .unwrap_or_else(|err| panic!("Could not create surface: {:?}", err));
-    window_context.surface = Some(surface.clone());
-    println!("Successfully created surface");
-
-    // Create the swapchain and images
-    let surface_capabilities = window_context
-        .device
-        .physical_device()
-        .surface_capabilities(&surface, Default::default())
-        .unwrap_or_else(|err| panic!("Failed to get surface capabilities: {:?}", err));
-    let (swapchain, swapchain_images) =
-        create_swapchain(window_context.device.clone(), surface, surface_capabilities)
-            .unwrap_or_else(|err| panic!("Could not create swapchain: {:?}", err));
-    window_context.swapchain = Some(swapchain.clone());
-    window_context.images = Some(swapchain_images.clone());
-    println!("Successfully created swapchain");
-
-    // Create render pass
-    let render_pass = create_render_pass(window_context.device.clone(), swapchain.clone())
-        .unwrap_or_else(|err| panic!("Could not create render pass: {:?}", err));
-    println!("Successfully created render pass");
-    window_context.render_pass = Some(render_pass.clone());
-
-    // Create frame buffer
-    let framebuffer = create_frame_buffer(
-        render_pass.clone(),
-        &swapchain_images,
-        window_context.depth_buffer,
-        swapchain.image_format(),
-    );
-    window_context.framebuffer = Some(framebuffer.clone());
-    println!("Successfully created framebuffer");
-
-    let viewport = Viewport {
-        offset: [0.0, 0.0],
-        extent: window.inner_size().into(),
-        depth_range: 0.0..=1.0,
-    };
-    window_context.viewport = viewport.clone();
-
-    window_context.pipelines = create_pipelines(window_context);
-    if window_context.pipelines.is_empty() {
-        // This might mean there's no meshes in the pipeline
-        println!("Warning: No pipelines were created when initializing!");
-    }
-    println!("Successfully created graphics pipeline");
-
-    // Put all verticies of all meshes into the vertex buffer
-    update_vertex_buffer(window_context);
-
-    let command_buffers = create_recording_command_buffer(
-        &window_context.vertex_buffer.as_ref().unwrap(),
-        &window_context.index_buffer.as_ref().unwrap(),
-        window_context.framebuffer.clone().unwrap(),
-        &window_context.pipelines,
-        &window_context.queues,
-        &window_context.meshes,
-        window_context.command_buffer_allocator.clone().unwrap(),
-    );
-    println!("Successfully created command buffer");
-    window_context.command_buffers = Some(command_buffers);
-}
-
-pub fn update_vertex_buffer(window_context: &mut WindowContext) {
-    // Create new vertex buffer allocator if there isn't one already
-    if window_context.vertex_buffer_allocator.is_none() {
-        println!("No vertex buffer alloctor found, creating new one...");
-        let vertex_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
-            window_context.device.as_ref().unwrap().clone(),
-        ));
-        window_context.vertex_buffer_allocator = Some(vertex_memory_allocator.clone());
-    }
-
-    // Also create new index buffer allocator if there isn't one
-    if window_context.index_buffer_allocator.is_none() {
-        println!("No index buffer alloctor found, creating new one...");
-        let index_memory_allocator = Arc::new(StandardMemoryAllocator::new_default(
-            window_context.device.as_ref().unwrap().clone(),
-        ));
-        window_context.index_buffer_allocator = Some(index_memory_allocator.clone());
-    }
-
+pub fn update_vertex_buffer(
+    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
+    index_buffer_allocator: Arc<StandardMemoryAllocator>,
+) -> (Subbuffer<[Vertex3D]>, Subbuffer<[u32]>) {
     // Fill the vertex and index buffers with all of our models
     let mut verticies: Vec<Vertex3D> = vec![];
     let mut indicies: Vec<u32> = vec![];
-    for mesh_mutex in &window_context.meshes {
+    for mesh_mutex in &meshes {
         let mesh = mesh_mutex.lock().unwrap();
         verticies = combine_vec(vec![verticies, mesh.verticies.clone()]);
         indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
@@ -968,11 +927,7 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
         indicies.push(0);
     }
     let vertex_buffer = Buffer::from_iter(
-        window_context
-            .vertex_buffer_allocator
-            .as_ref()
-            .unwrap()
-            .clone(),
+        vertex_buffer_allocator,
         BufferCreateInfo {
             usage: BufferUsage::VERTEX_BUFFER,
             ..Default::default()
@@ -987,11 +942,7 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
     .unwrap_or_else(|err| panic!("Could not create vertex buffer: {:?}", err));
 
     let index_buffer = Buffer::from_iter(
-        window_context
-            .index_buffer_allocator
-            .as_ref()
-            .unwrap()
-            .clone(),
+        index_buffer_allocator,
         BufferCreateInfo {
             usage: BufferUsage::INDEX_BUFFER,
             ..Default::default()
@@ -1005,21 +956,25 @@ pub fn update_vertex_buffer(window_context: &mut WindowContext) {
     )
     .unwrap_or_else(|err| panic!("Could not create index buffer: {:?}", err));
 
-    window_context.vertex_buffer = Some(vertex_buffer);
-    window_context.index_buffer = Some(index_buffer);
-    update_pipelines(window_context);
+    //update_pipelines(window_context);
+    (vertex_buffer, index_buffer)
 }
 
 // This is called when we only need to update shaders and perspective
 pub fn update_pipelines(window_context: &mut WindowContext) {
-    window_context.pipelines = create_pipelines(window_context);
-    window_context.command_buffers = Some(create_recording_command_buffer(
-        &window_context.vertex_buffer.as_ref().unwrap(),
-        &window_context.index_buffer.as_ref().unwrap(),
-        window_context.framebuffer.clone().unwrap(),
+    window_context.pipelines = create_pipelines(
+        window_context.device.clone(),
+        window_context.meshes.clone(),
+        window_context.render_pass.clone(),
+        window_context.viewport.clone(),
+    );
+    window_context.command_buffers = create_recording_command_buffer(
+        &window_context.vertex_buffer,
+        &window_context.index_buffer,
+        window_context.framebuffer.clone(),
         &window_context.pipelines,
-        &window_context.queues.as_ref().unwrap(),
+        &window_context.queues,
         &window_context.meshes,
-        window_context.command_buffer_allocator.clone().unwrap(),
-    ));
+        window_context.command_buffer_allocator.clone(),
+    );
 }

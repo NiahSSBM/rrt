@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use vgfx::WindowContext;
-use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
+use vgfx::{recreate_swapchain, redraw, resize_window};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
@@ -18,8 +18,8 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::{Platform, update_pipelines};
 use crate::vgfx::update_vertex_buffer;
+use crate::vgfx::{Platform, update_pipelines};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -40,21 +40,17 @@ impl ApplicationHandler for App {
             );
             return;
         }
-        for i in 0..self.window_contexts.len() {
-            let window = Arc::new(
-                event_loop
-                    .create_window(Window::default_attributes())
-                    .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
-            );
-            self.window_contexts[i].window = Some(window);
-            init_vulkano(&mut self.window_contexts[i]);
 
+        let window_context = WindowContext::new(&event_loop);
+        self.window_contexts.push(window_context);
+
+        for i in 0..self.window_contexts.len() {
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
             let game_data = GameData {
                 to_render,
                 from_render,
-                render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
+                render_queue: self.window_contexts[i].queues.clone()[0].clone(),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             self.window_contexts[i].game_thread_sender = Some(to_game);
@@ -71,7 +67,7 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         for window_context in &mut self.window_contexts {
-            let window = window_context.window.clone().unwrap();
+            let window = window_context.window.clone();
             if window_id == window.id() {
                 match event {
                     WindowEvent::CloseRequested => {
@@ -135,17 +131,20 @@ impl ApplicationHandler for App {
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
-
                                 }
                                 RenderEvent::UpdatePipelines => {
                                     should_update_pipelines = true;
-                                },
+                                }
                             },
                             Err(_) => (),
                         }
                         // Runs if verticies are changed
                         if should_update_buffers {
-                            update_vertex_buffer(window_context);
+                            update_vertex_buffer(
+                                window_context.meshes.clone(),
+                                window_context.vertex_buffer_allocator.clone(),
+                                window_context.index_buffer_allocator.clone(),
+                            );
                         }
 
                         // Runs if shaders or perspective is updated
@@ -201,11 +200,8 @@ fn main() {
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // Additional windows can be added by simply creating another window context and adding it to the app window array below
-    let window_context = WindowContext::new(&event_loop);
-
     let mut app = App {
-        window_contexts: vec![window_context],
+        window_contexts: vec![],
         ..Default::default()
     };
 
