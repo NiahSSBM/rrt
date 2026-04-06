@@ -38,7 +38,7 @@ use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::graphics::viewport::{self, Viewport, ViewportState};
 use vulkano::pipeline::graphics::{GraphicsPipelineCreateInfo, vertex_input};
 use vulkano::pipeline::{
     GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
@@ -52,11 +52,13 @@ use vulkano::swapchain::{
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
-use vulkano_taskgraph::Id;
-use vulkano_taskgraph::graph::{AttachmentInfo, CompileInfo, ExecutableTaskGraph, TaskGraph};
+use vulkano_taskgraph::graph::{
+    AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph
+};
 use vulkano_taskgraph::resource::{
     AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
 };
+use vulkano_taskgraph::{Id, resource_map};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::wayland::{ActiveEventLoopExtWayland, EventLoopExtWayland};
 use winit::window::{self, Window};
@@ -89,6 +91,7 @@ pub struct WindowContext {
     pub device: Arc<Device>,
     //command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
     task_graph: ExecutableTaskGraph<Self>,
+    scene_node_id: NodeId,
     pub resources: Arc<Resources>,
     pub flight_id: Id<Flight>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
@@ -102,6 +105,8 @@ pub struct WindowContext {
     depth_buffer: Arc<ImageView>,
     //framebuffer: Vec<Arc<Framebuffer>>,
     //swapchain: Arc<Swapchain>,
+    swapchain_id: Id<Swapchain>,
+    virtual_swapchain_id: Id<Swapchain>,
     surface: Arc<Surface>,
     //images: Vec<Arc<Image>>,
     //render_pass: Arc<RenderPass>,
@@ -144,6 +149,12 @@ impl WindowContext {
                 .create_window(Window::default_attributes())
                 .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
         );
+
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: window.inner_size().into(),
+            depth_range: 0.0..=1.0,
+        };
 
         // Query available physical devices and select one
         let available_devices = vulkan_instance.enumerate_physical_devices().unwrap();
@@ -225,7 +236,7 @@ impl WindowContext {
                 ImageLayoutType::Optimal,
                 &AttachmentInfo {
                     clear: true,
-                    format: Format::R32_UINT,
+                    format: swapchain_format,
                     ..Default::default()
                 },
             )
@@ -238,8 +249,17 @@ impl WindowContext {
                 flight_id: flight_id,
                 ..Default::default()
             })
-        }.unwrap();
+        }
+        .unwrap();
 
+        let scene_node = task_graph.task_node_mut(scene_node_id).unwrap();
+        let subpass = scene_node.subpass().unwrap().clone();
+        scene_node
+            .task_mut()
+            .downcast_mut::<SceneTask>()
+            .unwrap();
+            //.bind_mesh(temp_mesh)
+            //.create_pipeline(device.clone(), subpass, viewport.clone());
 
         // Allocators
         let image_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -268,12 +288,6 @@ impl WindowContext {
         //    depth_buffer.clone(),
         //    swapchain.image_format(),
         //);
-
-        let viewport = Viewport {
-            offset: [0.0, 0.0],
-            extent: window.inner_size().into(),
-            depth_range: 0.0..=1.0,
-        };
 
         // Create pipelines
         //let pipelines = create_pipelines(
@@ -307,6 +321,7 @@ impl WindowContext {
             device,
             //command_buffers,
             task_graph,
+            scene_node_id,
             resources,
             flight_id,
             command_buffer_allocator,
@@ -320,6 +335,8 @@ impl WindowContext {
             depth_buffer,
             //framebuffer,
             //swapchain,
+            swapchain_id,
+            virtual_swapchain_id,
             surface,
             //images,
             //render_pass,
@@ -337,9 +354,56 @@ impl WindowContext {
 
     pub fn add_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
-        self.meshes.push(mesh);
+        self.meshes.push(mesh.clone());
+
+        let scene_node = self.task_graph.task_node_mut(self.scene_node_id).unwrap();
+        let subpass = scene_node.subpass().unwrap().clone();
+        scene_node
+            .task_mut()
+            .downcast_mut::<SceneTask>()
+            .unwrap()
+            .bind_mesh(mesh)
+            .create_pipeline(self.device.clone(), subpass, self.viewport.clone());
 
         Ok(self)
+    }
+
+    pub fn recreate_swapchain(&mut self) {
+        let flight = self.resources.flight(self.flight_id).unwrap();
+
+        self.swapchain_id = self
+            .resources
+            .recreate_swapchain(self.swapchain_id, |create_info| SwapchainCreateInfo {
+                image_extent: self.window.inner_size().into(),
+                ..create_info
+            })
+            .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));
+
+        self.viewport.extent = self.window.inner_size().into();
+
+        self.recreate_swapchain = false;
+
+        flight.wait(None).unwrap();
+
+        let resource_map =
+            resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id)
+                .unwrap();
+
+        match unsafe {
+            self.task_graph
+                .execute(resource_map, self, || self.window.pre_present_notify())
+        } {
+            Ok(()) => {}
+            Err(ExecuteError::Swapchain {
+                error: Validated::Error(VulkanError::OutOfDate),
+                ..
+            }) => {
+                self.recreate_swapchain = true;
+            }
+            Err(e) => {
+                panic!("Failed to execute next frame: {e:?}");
+            }
+        }
     }
 }
 
@@ -469,9 +533,6 @@ pub fn redraw(window_context: &mut WindowContext) {
         )
         .then_signal_fence_and_flush();
 
-    fences[image_i as usize] = match future.map_err(Validated::unwrap) {
-        Ok(value) => Some(Arc::new(value)),
-        Err(VulkanError::OutOfDate) => {
             window_context.recreate_swapchain = true;
             None
         }
@@ -633,81 +694,6 @@ fn create_depth_image_view(
     )
 }
 
-// TODO:
-// Cache already created shaders so they don't need their own pipeline
-// Batch host/device buffer copies so it's not copied for every mesh
-// Execute the command buffer once, instead of for each mesh
-fn create_pipelines(
-    device: Arc<Device>,
-    meshes: Vec<Arc<Mutex<Mesh3D>>>,
-    render_pass: Arc<RenderPass>,
-    viewport: Viewport,
-) -> Vec<Arc<GraphicsPipeline>> {
-    let mut completed_pipelines: Vec<Arc<GraphicsPipeline>> = Vec::new();
-
-    if meshes.is_empty() {
-        // Not fatal, a default mesh with 1 vertex is created later in this case
-        println!("Warning: No meshes to load!");
-    }
-
-    for mesh_mutex in &meshes {
-        let mesh = mesh_mutex.lock().unwrap();
-        let vs = mesh
-            .shader
-            .stage_entries
-            .get(&ShaderStage::Vertex)
-            .expect("Error: No vertex shader found!");
-        let fs = mesh
-            .shader
-            .stage_entries
-            .get(&ShaderStage::Fragment)
-            .expect("Error: No fragment shader found!");
-
-        let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
-
-        let depth_stencil_state = DepthStencilState {
-            depth: Some(DepthState::simple()),
-            ..Default::default()
-        };
-
-        let stages = [
-            PipelineShaderStageCreateInfo::new(vs.clone()),
-            PipelineShaderStageCreateInfo::new(fs.clone()),
-        ];
-
-        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-
-        let new_pipeline = GraphicsPipeline::new(
-            device.clone(),
-            None,
-            GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(vertex_input_state),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState {
-                    viewports: [viewport.clone()].into_iter().collect(),
-                    ..Default::default()
-                }),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                subpass: Some(subpass.into()),
-                depth_stencil_state: Some(depth_stencil_state),
-                // Our pipeline is pre-computed and is attached to our shader on our mesh
-                ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
-            },
-        )
-        .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
-
-        completed_pipelines.push(new_pipeline);
-    }
-
-    completed_pipelines
-}
-
 fn create_recording_command_buffer(
     vertex_buffer: &Subbuffer<[Vertex3D]>,
     index_buffer: &Subbuffer<[u32]>,
@@ -756,7 +742,7 @@ fn create_recording_command_buffer(
             for (i, mesh_mutex) in meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
                 vertex_slice_start = vertex_slice_end;
-                vertex_slice_end = vertex_slice_start + mesh.verticies.len() as u64;
+                vertex_slice_end = vertex_slice_start + mesh.vertices.len() as u64;
                 index_slice_start = index_slice_end;
                 index_slice_end = index_slice_start + mesh.indicies.len() as u64;
 
@@ -862,7 +848,7 @@ fn create_command_buffers(
             for (i, mesh_mutex) in meshes.iter().enumerate() {
                 let mesh = mesh_mutex.lock().unwrap();
                 vertex_slice_start = vertex_slice_end;
-                vertex_slice_end = vertex_slice_start + mesh.verticies.len() as u64;
+                vertex_slice_end = vertex_slice_start + mesh.vertices.len() as u64;
                 index_slice_start = index_slice_end;
                 index_slice_end = index_slice_start + mesh.indicies.len() as u64;
 
@@ -1002,7 +988,7 @@ pub fn update_vertex_buffer(
     let mut indicies: Vec<u32> = vec![];
     for mesh_mutex in &meshes {
         let mesh = mesh_mutex.lock().unwrap();
-        verticies = combine_vec(vec![verticies, mesh.verticies.clone()]);
+        verticies = combine_vec(vec![verticies, mesh.vertices.clone()]);
         indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
     }
 

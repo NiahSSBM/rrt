@@ -165,8 +165,7 @@ impl ApplicationHandler for App {
                         }
 
                         if window_context.should_resize || window_context.recreate_swapchain {
-                            window_context.recreate_swapchain = false;
-                            //recreate_swapchain(window_context);
+                            window_context.recreate_swapchain();
 
                             if window_context.should_resize {
                                 window_context.should_resize = false;

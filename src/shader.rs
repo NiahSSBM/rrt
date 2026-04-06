@@ -496,13 +496,15 @@ fn push_descriptor_set(
 
     let cb = cbb.build().unwrap();
 
+    println!("push descriptor set");
+
     // Command buffer finished, execute
-    cb.execute(queue.clone())
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap()
-        .wait(None)
-        .unwrap();
+    //cb.execute(queue.clone())
+    //    .unwrap()
+    //    .then_signal_fence_and_flush()
+    //    .unwrap()
+    //    .wait(None)
+    //    .unwrap();
 
     (pipeline_layout, descriptor_sets)
 }

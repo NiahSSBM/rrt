@@ -5,10 +5,24 @@ use std::{
 
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
-    device::Queue,
+    device::{Device, Queue},
     image::Image,
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
-    pipeline::GraphicsPipeline,
+    pipeline::{
+        GraphicsPipeline, PipelineShaderStageCreateInfo,
+        graphics::{
+            GraphicsPipelineCreateInfo,
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            depth_stencil::{DepthState, DepthStencilState},
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Viewport, ViewportState},
+        },
+    },
+    render_pass::{RenderPass, Subpass},
+    shader::ShaderStage,
 };
 use vulkano_taskgraph::{
     ClearValues, Id, Task, TaskContext, TaskResult,
@@ -25,6 +39,7 @@ use crate::{
 
 pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
+    mesh: Option<Arc<Mutex<Mesh3D>>>,
     vertex_buffer_id: Id<Buffer>,
 }
 
@@ -42,7 +57,7 @@ impl SceneTask {
         let mut indicies: Vec<u32> = vec![];
         for mesh_mutex in &meshes {
             let mesh = mesh_mutex.lock().unwrap();
-            vertices = combine_vec(vec![vertices, mesh.verticies.clone()]);
+            vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
             indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
         }
 
@@ -81,8 +96,66 @@ impl SceneTask {
 
         SceneTask {
             pipeline: None,
+            mesh: None,
             vertex_buffer_id,
         }
+    }
+
+    pub fn bind_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> &mut Self {
+        self.mesh = Some(mesh.clone());
+
+        self
+    }
+
+    pub fn create_pipeline(&mut self, device: Arc<Device>, subpass: Subpass, viewport: Viewport) {
+        let binding = self.mesh.clone().unwrap();
+        let mesh = binding.lock().unwrap();
+
+        let vs = mesh
+            .shader
+            .stage_entries
+            .get(&ShaderStage::Vertex)
+            .expect("Error: No vertex shader found!");
+        let fs = mesh
+            .shader
+            .stage_entries
+            .get(&ShaderStage::Fragment)
+            .expect("Error: No fragment shader found!");
+
+        let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
+
+        let depth_stencil_state = DepthStencilState {
+            depth: Some(DepthState::simple()),
+            ..Default::default()
+        };
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs.clone()),
+            PipelineShaderStageCreateInfo::new(fs.clone()),
+        ];
+
+        let new_pipeline = GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState {
+                    viewports: [viewport.clone()].into_iter().collect(),
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState::default()),
+                subpass: Some(subpass.clone().into()),
+                depth_stencil_state: None,
+                ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
+            },
+        )
+        .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
+
+        self.pipeline = Some(new_pipeline);
     }
 }
 
@@ -100,7 +173,7 @@ impl Task for SceneTask {
         window_context: &Self::World,
     ) -> TaskResult {
         cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
-        cbf.bind_pipeline_graphics(self.pipeline.as_ref().unwrap())?;
+        //cbf.bind_pipeline_graphics(self.pipeline.as_ref().expect("Attempted to bind pipeline but there's no pipeline!"))?;
         cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
 
         unsafe { cbf.draw(3, 1, 0, 0) }?;
