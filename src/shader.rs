@@ -496,8 +496,6 @@ fn push_descriptor_set(
 
     let cb = cbb.build().unwrap();
 
-    println!("push descriptor set");
-
     // Command buffer finished, execute
     //cb.execute(queue.clone())
     //    .unwrap()

@@ -33,7 +33,7 @@ use winit::window::Window;
 
 use crate::{
     mesh::{Mesh3D, combine_vec},
-    shader::Vertex3D,
+    shader::{Vertex3D, fs_default, vs_default},
     vgfx::WindowContext,
 };
 
@@ -147,7 +147,10 @@ impl SceneTask {
                 }),
                 rasterization_state: Some(RasterizationState::default()),
                 multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::default()),
+                color_blend_state: Some(ColorBlendState {
+                        attachments: vec![ColorBlendAttachmentState::default()],
+                        ..Default::default()
+                    }),
                 subpass: Some(subpass.clone().into()),
                 depth_stencil_state: None,
                 ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())

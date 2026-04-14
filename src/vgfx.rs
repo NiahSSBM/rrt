@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
-use std::vec;
+use std::time::{Duration, Instant};
+use std::{thread, vec};
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
@@ -24,7 +24,7 @@ use vulkano::image::ImageLayout::{self, PresentSrc};
 use vulkano::image::sampler::ComponentMapping;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{
-    Image, ImageAspects, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
+    Image, ImageAspects, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::MemoryPropertyFlags;
@@ -53,7 +53,7 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture, Sharing};
 use vulkano::{Validated, VulkanError, VulkanLibrary, single_pass_renderpass};
 use vulkano_taskgraph::graph::{
-    AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph
+    AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph,
 };
 use vulkano_taskgraph::resource::{
     AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
@@ -231,6 +231,7 @@ impl WindowContext {
             )
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
+                // MUST have at least one attachment
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE,
                 ImageLayoutType::Optimal,
@@ -257,9 +258,9 @@ impl WindowContext {
         scene_node
             .task_mut()
             .downcast_mut::<SceneTask>()
-            .unwrap();
-            //.bind_mesh(temp_mesh)
-            //.create_pipeline(device.clone(), subpass, viewport.clone());
+            .unwrap()
+            .bind_mesh(create_temp_mesh(queues[0].clone()))
+            .create_pipeline(device.clone(), subpass, viewport.clone());
 
         // Allocators
         let image_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -369,7 +370,7 @@ impl WindowContext {
     }
 
     pub fn recreate_swapchain(&mut self) {
-        let flight = self.resources.flight(self.flight_id).unwrap();
+        println!("recreate swapchain");
 
         self.swapchain_id = self
             .resources
@@ -380,8 +381,14 @@ impl WindowContext {
             .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));
 
         self.viewport.extent = self.window.inner_size().into();
-
         self.recreate_swapchain = false;
+    }
+
+    pub fn redraw(&mut self) {
+        println!("redraw");
+        let flight = self.resources.flight(self.flight_id).unwrap();
+
+        thread::sleep(Duration::from_millis(3000));
 
         flight.wait(None).unwrap();
 
@@ -404,6 +411,24 @@ impl WindowContext {
                 panic!("Failed to execute next frame: {e:?}");
             }
         }
+    }
+
+    pub fn resize_window(&mut self) {
+        let (format, _) = get_format_and_colorspace(self.device.clone(), self.surface.clone());
+
+        self.resources.create_image(
+            ImageCreateInfo {
+                flags: ImageCreateFlags::MUTABLE_FORMAT,
+                image_type: ImageType::Dim2d,
+                format,
+                view_formats: Default::default(),
+                extent: self.resources.swapchain(self.swapchain_id).unwrap().images()[0].extent(),
+                mip_levels: 1,
+                usage: ImageUsage::COLOR_ATTACHMENT,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        ).unwrap();
     }
 }
 
@@ -545,6 +570,53 @@ pub fn redraw(window_context: &mut WindowContext) {
     window_context.previous_fence_i = image_i;
 }
 */
+
+fn create_temp_mesh(queue: Arc<Queue>) -> Arc<Mutex<Mesh3D>> {
+    let stage_pipeline = std::collections::HashMap::from([
+        (
+            ShaderStage::Vertex,
+            crate::shader::ShaderType::VertexDefault,
+        ),
+        (
+            ShaderStage::Fragment,
+            crate::shader::ShaderType::FragmentDefault,
+        ),
+    ]);
+
+    let perspective = crate::shader::AdditionalShaderProperties::Perspective(
+        nalgebra::Matrix4::new_rotation(nalgebra::Vector3::new(0.0, 0.0, 0.0)).into(),
+        nalgebra::Matrix4::look_at_rh(
+            &nalgebra::Point3::new(4.0, 0.0, 0.0),  // Where the camera is
+            &nalgebra::Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
+            &nalgebra::Vector3::new(0.0, 1.0, 0.0), // What axis is up
+        )
+        .into(),
+        nalgebra::Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+    );
+    let tri_shaders = crate::shader::Shader::new(
+        stage_pipeline.clone(),
+        vec![perspective.clone()],
+        queue.clone(),
+    );
+
+    let colors: [AlphaColor<color::Srgb>; 3] = [
+        color::palette::css::RED,
+        color::palette::css::BLUE,
+        color::palette::css::GREEN,
+    ];
+    let model_verts: Vec<Vertex3D> = vec![
+        Vertex3D::new([1.0, 0.0, 0.0], colors[0]),
+        Vertex3D::new([0.0, 1.0, 0.0], colors[1]),
+        Vertex3D::new([0.0, 0.0, 1.0], colors[2]),
+    ];
+    let model_indicies: Vec<usize> = vec![0, 1, 2];
+
+    Arc::new(Mutex::new(Mesh3D::new(
+        model_verts.clone(),
+        model_indicies.iter().map(|i| i.clone() as u32).collect(),
+        tri_shaders.clone(),
+    )))
+}
 
 fn get_device_total_memory(device: &Arc<PhysicalDevice>) -> u64 {
     let mut total_memory = 0;

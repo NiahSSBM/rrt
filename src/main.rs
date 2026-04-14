@@ -169,11 +169,11 @@ impl ApplicationHandler for App {
 
                             if window_context.should_resize {
                                 window_context.should_resize = false;
-                                //resize_window(window_context);
+                                window_context.resize_window();
                             }
                         }
 
-                        //redraw(window_context);
+                        window_context.redraw();
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
