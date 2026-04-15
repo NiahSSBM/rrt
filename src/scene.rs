@@ -48,10 +48,7 @@ impl SceneTask {
         queues: Vec<Arc<Queue>>,
         flight_id: Id<Flight>,
     ) -> Self {
-        let mut vertices: Vec<Vertex3D> = vec![Vertex3D {
-            position: [0.0, 0.0, 0.0],
-            color: [0.0, 0.0, 0.0, 0.0],
-        }];
+        let mut vertices: Vec<Vertex3D> = vec![];
         let mut indicies: Vec<u32> = vec![];
         for mesh_mutex in &meshes {
             let mesh = mesh_mutex.lock().unwrap();
@@ -174,7 +171,7 @@ impl Task for SceneTask {
         window_context: &Self::World,
     ) -> TaskResult { unsafe {
         cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
-        //cbf.bind_pipeline_graphics(self.pipeline.as_ref().expect("Attempted to bind pipeline but there's no pipeline!"))?;
+        cbf.bind_pipeline_graphics(self.pipeline.as_ref().expect("Attempted to bind pipeline but there's no pipeline!"))?;
         cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
 
         cbf.draw(3, 1, 0, 0)?;

@@ -3,6 +3,7 @@ use std::collections::TryReserveError;
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
+use vulkano::instance::debug::{DebugUtilsMessenger, DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
@@ -13,20 +14,13 @@ use vulkano::device::{
     QueueCreateInfo,
 };
 use vulkano::format::Format;
-use vulkano::image::{
-    ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage
-};
-use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::image::{ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage};
+use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::MemoryPropertyFlags;
-use vulkano::memory::allocator::{
-    AllocationCreateInfo,
-    MemoryTypeFilter, StandardMemoryAllocator,
-};
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::shader::ShaderStage;
-use vulkano::swapchain::{
-    ColorSpace, Surface, Swapchain, SwapchainCreateInfo,
-};
+use vulkano::swapchain::{ColorSpace, Surface, Swapchain, SwapchainCreateInfo};
 use vulkano::{Validated, VulkanError, VulkanLibrary};
 use vulkano_taskgraph::graph::{
     AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph,
@@ -89,9 +83,11 @@ impl WindowContext {
     pub fn new(event_loop: &ActiveEventLoop) -> Self {
         let vulkan_libary = VulkanLibrary::new()
             .unwrap_or_else(|err| panic!("Couldn't load Vulkan library: {:?}", err));
-        let vulkan_extensions = Surface::required_extensions(event_loop).unwrap_or_else(|err| {
+        let vulkan_extensions = InstanceExtensions {
+            ext_debug_utils: true,
+            ..Surface::required_extensions(event_loop).unwrap_or_else(|err| {
             panic!("Could not determine required Vulkan extensions: {:?}", err)
-        });
+        })};
 
         let vulkan_instance = Instance::new(
             vulkan_libary,
@@ -188,19 +184,19 @@ impl WindowContext {
             .create_task_node(
                 "Scene",
                 vulkano_taskgraph::QueueFamilyType::Graphics,
-                SceneTask::new(vec![], resources.clone(), queues.clone(), flight_id),
+                SceneTask::new(
+                    vec![create_temp_mesh(queues[0].clone())],
+                    resources.clone(),
+                    queues.clone(),
+                    flight_id,
+                ),
             )
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
-                // MUST have at least one attachment
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE,
                 ImageLayoutType::Optimal,
-                &AttachmentInfo {
-                    clear: true,
-                    format: swapchain_format,
-                    ..Default::default()
-                },
+                &AttachmentInfo::default(),
             )
             .build();
 
@@ -208,7 +204,7 @@ impl WindowContext {
             task_graph.compile(&CompileInfo {
                 queues: &[&queues[0]],
                 present_queue: Some(&queues[0]),
-                flight_id: flight_id,
+                flight_id,
                 ..Default::default()
             })
         }
@@ -284,7 +280,6 @@ impl WindowContext {
     }
 
     pub fn redraw(&mut self) {
-        println!("redraw");
         let flight = self.resources.flight(self.flight_id).unwrap();
 
         flight.wait(None).unwrap();
@@ -313,19 +308,26 @@ impl WindowContext {
     pub fn resize_window(&mut self) {
         let (format, _) = get_format_and_colorspace(self.device.clone(), self.surface.clone());
 
-        self.resources.create_image(
-            ImageCreateInfo {
-                flags: ImageCreateFlags::MUTABLE_FORMAT,
-                image_type: ImageType::Dim2d,
-                format,
-                view_formats: Default::default(),
-                extent: self.resources.swapchain(self.swapchain_id).unwrap().images()[0].extent(),
-                mip_levels: 1,
-                usage: ImageUsage::COLOR_ATTACHMENT,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        ).unwrap();
+        self.resources
+            .create_image(
+                ImageCreateInfo {
+                    flags: ImageCreateFlags::MUTABLE_FORMAT,
+                    image_type: ImageType::Dim2d,
+                    format,
+                    view_formats: Default::default(),
+                    extent: self
+                        .resources
+                        .swapchain(self.swapchain_id)
+                        .unwrap()
+                        .images()[0]
+                        .extent(),
+                    mip_levels: 1,
+                    usage: ImageUsage::COLOR_ATTACHMENT,
+                    ..Default::default()
+                },
+                AllocationCreateInfo::default(),
+            )
+            .unwrap();
     }
 }
 
