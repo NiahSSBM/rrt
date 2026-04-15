@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::f32::consts::E;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -14,18 +13,14 @@ use nalgebra::Point3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
-use vulkano::buffer::view;
 use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
 
-use crate::mesh::Mesh2D;
 use crate::mesh::Mesh3D;
 use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
-use crate::shader::Vertex2D;
 use crate::shader::Vertex3D;
-use crate::shader::fs_custom::load;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),

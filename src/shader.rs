@@ -1,11 +1,9 @@
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
-use nalgebra::{Matrix, Matrix4, Point3, Vector, Vector3};
+use nalgebra::Matrix4;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
-    mem::discriminant,
-    ops::Add,
     sync::Arc,
     vec,
 };
@@ -494,7 +492,7 @@ fn push_descriptor_set(
         .unwrap();
     }
 
-    let cb = cbb.build().unwrap();
+    let _cb = cbb.build().unwrap();
 
     // Command buffer finished, execute
     //cb.execute(queue.clone())

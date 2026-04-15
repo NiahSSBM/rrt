@@ -6,7 +6,6 @@ use std::{
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     device::{Device, Queue},
-    image::Image,
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         GraphicsPipeline, PipelineShaderStageCreateInfo,
@@ -21,7 +20,7 @@ use vulkano::{
             viewport::{Viewport, ViewportState},
         },
     },
-    render_pass::{RenderPass, Subpass},
+    render_pass::Subpass,
     shader::ShaderStage,
 };
 use vulkano_taskgraph::{
@@ -29,11 +28,10 @@ use vulkano_taskgraph::{
     command_buffer::RecordingCommandBuffer,
     resource::{Flight, HostAccessType, Resources},
 };
-use winit::window::Window;
 
 use crate::{
     mesh::{Mesh3D, combine_vec},
-    shader::{Vertex3D, fs_default, vs_default},
+    shader::Vertex3D,
     vgfx::WindowContext,
 };
 
@@ -124,7 +122,7 @@ impl SceneTask {
 
         let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
 
-        let depth_stencil_state = DepthStencilState {
+        let _depth_stencil_state = DepthStencilState {
             depth: Some(DepthState::simple()),
             ..Default::default()
         };
@@ -165,7 +163,7 @@ impl SceneTask {
 impl Task for SceneTask {
     type World = WindowContext;
 
-    fn clear_values(&self, clear_values: &mut ClearValues<'_>) {
+    fn clear_values(&self, _clear_values: &mut ClearValues<'_>) {
         //clear_values.set(self.bloom_image_id, [0.0; 4]);
     }
 
@@ -174,13 +172,13 @@ impl Task for SceneTask {
         cbf: &mut RecordingCommandBuffer<'_>,
         _tcx: &mut TaskContext<'_>,
         window_context: &Self::World,
-    ) -> TaskResult {
+    ) -> TaskResult { unsafe {
         cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
         //cbf.bind_pipeline_graphics(self.pipeline.as_ref().expect("Attempted to bind pipeline but there's no pipeline!"))?;
         cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
 
-        unsafe { cbf.draw(3, 1, 0, 0) }?;
+        cbf.draw(3, 1, 0, 0)?;
 
         Ok(())
-    }
+    }}
 }

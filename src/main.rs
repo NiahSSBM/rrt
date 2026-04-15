@@ -4,17 +4,16 @@ pub mod shader;
 mod vgfx;
 mod scene;
 
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use vgfx::WindowContext;
-use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    window::WindowId,
 };
 
 use crate::game::{GameData, RenderEvent};
@@ -165,6 +164,7 @@ impl ApplicationHandler for App {
                         }
 
                         if window_context.should_resize || window_context.recreate_swapchain {
+                            window_context.recreate_swapchain = false;
                             window_context.recreate_swapchain();
 
                             if window_context.should_resize {
