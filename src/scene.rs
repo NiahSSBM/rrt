@@ -8,7 +8,7 @@ use vulkano::{
     device::{Device, Queue},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
-        GraphicsPipeline, PipelineShaderStageCreateInfo,
+        GraphicsPipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -143,9 +143,9 @@ impl SceneTask {
                 rasterization_state: Some(RasterizationState::default()),
                 multisample_state: Some(MultisampleState::default()),
                 color_blend_state: Some(ColorBlendState {
-                        attachments: vec![ColorBlendAttachmentState::default()],
-                        ..Default::default()
-                    }),
+                    attachments: vec![ColorBlendAttachmentState::default()],
+                    ..Default::default()
+                }),
                 subpass: Some(subpass.clone().into()),
                 depth_stencil_state: None,
                 ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
@@ -169,13 +169,37 @@ impl Task for SceneTask {
         cbf: &mut RecordingCommandBuffer<'_>,
         _tcx: &mut TaskContext<'_>,
         window_context: &Self::World,
-    ) -> TaskResult { unsafe {
-        cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
-        cbf.bind_pipeline_graphics(self.pipeline.as_ref().expect("Attempted to bind pipeline but there's no pipeline!"))?;
-        cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
+    ) -> TaskResult {
+        let binding = self.mesh.clone().unwrap();
+        let mesh = binding.lock().unwrap();
 
-        cbf.draw(3, 1, 0, 0)?;
+        let binding = mesh.shader.pipeline_layout.clone().unwrap();
+        let layout = binding.as_ref();
 
-        Ok(())
-    }}
+        let binding = mesh.shader.descriptor_sets.get(&0).unwrap().clone();
+        let raw_descriptor_set = binding.as_ref().0.as_raw();
+
+        unsafe {
+            cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
+            cbf.as_raw().bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                layout,
+                0,
+                &[raw_descriptor_set],
+                &[],
+            )?;
+            cbf.bind_pipeline_graphics(
+                self.pipeline
+                    .as_ref()
+                    .expect("Attempted to bind pipeline but there's no pipeline!"),
+            )?;
+            cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
+
+            cbf.draw(mesh.indicies.len() as u32, 1, 0, 0)?;
+
+            cbf.destroy_object(binding.as_ref().0.clone());
+
+            Ok(())
+        }
+    }
 }
