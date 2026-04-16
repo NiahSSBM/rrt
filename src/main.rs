@@ -1,8 +1,8 @@
 mod game;
 mod mesh;
+mod scene;
 pub mod shader;
 mod vgfx;
-mod scene;
 
 use std::sync::{Mutex, mpsc};
 use std::thread;
@@ -17,8 +17,8 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
+use crate::vgfx::Platform;
 use crate::vgfx::update_vertex_buffer;
-use crate::vgfx::{Platform};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -126,6 +126,7 @@ impl ApplicationHandler for App {
                                 RenderEvent::AddMesh(mesh) => {
                                     println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
+                                    // Probably need to create a new task graph scene here
                                     should_update_buffers = true;
                                 }
                                 RenderEvent::UpdateVertexBuffer => {

@@ -37,24 +37,18 @@ use crate::{
 
 pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
-    mesh: Option<Arc<Mutex<Mesh3D>>>,
+    mesh: Arc<Mutex<Mesh3D>>,
     vertex_buffer_id: Id<Buffer>,
 }
 
 impl SceneTask {
     pub fn new(
-        meshes: Vec<Arc<Mutex<Mesh3D>>>,
+        mesh: Arc<Mutex<Mesh3D>>,
         resources: Arc<Resources>,
         queues: Vec<Arc<Queue>>,
         flight_id: Id<Flight>,
     ) -> Self {
-        let mut vertices: Vec<Vertex3D> = vec![];
-        let mut indicies: Vec<u32> = vec![];
-        for mesh_mutex in &meshes {
-            let mesh = mesh_mutex.lock().unwrap();
-            vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
-            indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
-        }
+        let mesh_mut = mesh.lock().unwrap().clone();
 
         let vertex_buffer_id = resources
             .create_buffer(
@@ -67,7 +61,7 @@ impl SceneTask {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::for_value(vertices.as_slice()).unwrap(),
+                DeviceLayout::for_value(mesh_mut.vertices.as_slice()).unwrap(),
             )
             .unwrap();
 
@@ -78,7 +72,7 @@ impl SceneTask {
                 flight_id,
                 |_cbf, tcx| {
                     tcx.write_buffer::<[Vertex3D]>(vertex_buffer_id, ..)?
-                        .copy_from_slice(&vertices);
+                        .copy_from_slice(&mesh_mut.vertices);
 
                     Ok(())
                 },
@@ -91,19 +85,13 @@ impl SceneTask {
 
         SceneTask {
             pipeline: None,
-            mesh: None,
+            mesh,
             vertex_buffer_id,
         }
     }
 
-    pub fn bind_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> &mut Self {
-        self.mesh = Some(mesh.clone());
-
-        self
-    }
-
     pub fn create_pipeline(&mut self, device: Arc<Device>, subpass: Subpass, viewport: Viewport) {
-        let binding = self.mesh.clone().unwrap();
+        let binding = self.mesh.clone();
         let mesh = binding.lock().unwrap();
 
         let vs = mesh
@@ -155,6 +143,10 @@ impl SceneTask {
 
         self.pipeline = Some(new_pipeline);
     }
+
+    pub fn update_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) {
+        self.mesh = mesh;
+    }
 }
 
 impl Task for SceneTask {
@@ -170,7 +162,7 @@ impl Task for SceneTask {
         _tcx: &mut TaskContext<'_>,
         window_context: &Self::World,
     ) -> TaskResult {
-        let binding = self.mesh.clone().unwrap();
+        let binding = self.mesh.clone();
         let mesh = binding.lock().unwrap();
 
         let binding = mesh.shader.pipeline_layout.clone().unwrap();

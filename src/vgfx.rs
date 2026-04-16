@@ -58,8 +58,8 @@ pub enum Platform {
 pub struct WindowContext {
     pub window: Arc<Window>,
     pub device: Arc<Device>,
-    task_graph: ExecutableTaskGraph<Self>,
-    scene_node_id: NodeId,
+    pub task_graph: ExecutableTaskGraph<Self>,
+    pub scene_node_id: NodeId,
     pub resources: Arc<Resources>,
     pub flight_id: Id<Flight>,
     pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
@@ -185,7 +185,7 @@ impl WindowContext {
                 "Scene",
                 vulkano_taskgraph::QueueFamilyType::Graphics,
                 SceneTask::new(
-                    vec![create_temp_mesh(queues[0].clone())],
+                    create_temp_mesh(queues[0].clone()),
                     resources.clone(),
                     queues.clone(),
                     flight_id,
@@ -216,7 +216,6 @@ impl WindowContext {
             .task_mut()
             .downcast_mut::<SceneTask>()
             .unwrap()
-            .bind_mesh(create_temp_mesh(queues[0].clone()))
             .create_pipeline(device.clone(), subpass, viewport.clone());
 
         // Allocators
@@ -259,15 +258,12 @@ impl WindowContext {
             .task_mut()
             .downcast_mut::<SceneTask>()
             .unwrap()
-            .bind_mesh(mesh)
             .create_pipeline(self.device.clone(), subpass, self.viewport.clone());
 
         Ok(self)
     }
 
     pub fn recreate_swapchain(&mut self) {
-        println!("recreate swapchain");
-
         self.swapchain_id = self
             .resources
             .recreate_swapchain(self.swapchain_id, |create_info| SwapchainCreateInfo {
