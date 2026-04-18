@@ -126,8 +126,6 @@ impl ApplicationHandler for App {
                                 RenderEvent::AddMesh(mesh) => {
                                     println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
-                                    // Probably need to create a new task graph scene here
-                                    should_update_buffers = true;
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
@@ -140,11 +138,12 @@ impl ApplicationHandler for App {
                         }
                         // Runs if verticies are changed
                         if should_update_buffers {
-                            update_vertex_buffer(
-                                window_context.meshes.clone(),
-                                window_context.vertex_buffer_allocator.clone(),
-                                window_context.index_buffer_allocator.clone(),
-                            );
+                            //update_vertex_buffer(
+                            //    window_context.meshes.clone(),
+                            //    window_context.vertex_buffer_allocator.clone(),
+                            //    window_context.index_buffer_allocator.clone(),
+                            //);
+                            window_context.update_taskgraph();
                         }
 
                         // Runs if shaders or perspective is updated

@@ -3,8 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use nalgebra::U32;
 use vulkano::{
-    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
@@ -31,24 +32,50 @@ use vulkano_taskgraph::{
 
 use crate::{
     mesh::{Mesh3D, combine_vec},
-    shader::Vertex3D,
+    shader::{Shader, Vertex3D},
     vgfx::WindowContext,
 };
 
 pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
-    mesh: Arc<Mutex<Mesh3D>>,
-    vertex_buffer_id: Id<Buffer>,
+    vertices: Vec<Vertex3D>,
+    indices: Vec<u32>,
+    shader: Shader,
+    pub vertex_buffer_id: Id<Buffer>,
+    pub index_buffer_id: Id<Buffer>,
 }
 
 impl SceneTask {
     pub fn new(
-        mesh: Arc<Mutex<Mesh3D>>,
+        meshes: &Vec<Arc<Mutex<Mesh3D>>>,
         resources: Arc<Resources>,
         queues: Vec<Arc<Queue>>,
         flight_id: Id<Flight>,
+        vertex_buffer_id: Option<Id<Buffer>>,
+        index_buffer_id: Option<Id<Buffer>>,
     ) -> Self {
-        let mesh_mut = mesh.lock().unwrap().clone();
+        let mut vertices: Vec<Vertex3D> = vec![];
+        let mut indices: Vec<u32> = vec![];
+        let mut shader: Option<Shader> = None;
+        for mesh_mutex in meshes {
+            let mesh = mesh_mutex.lock().unwrap();
+            vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
+            indices = combine_vec(vec![indices, mesh.indicies.clone()]);
+            shader = Some(mesh.shader.clone());
+        }
+
+        let shader = shader.expect("No meshes when creating new Scene Task!");
+
+        println!("new scenetask");
+        println!("vertices len: {}", vertices.len());
+
+        if vertex_buffer_id.is_some() {
+            unsafe { resources.remove_buffer(vertex_buffer_id.unwrap()).unwrap() };
+        }
+
+        if index_buffer_id.is_some() {
+            unsafe { resources.remove_buffer(index_buffer_id.unwrap()).unwrap() };
+        }
 
         let vertex_buffer_id = resources
             .create_buffer(
@@ -61,9 +88,28 @@ impl SceneTask {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::for_value(mesh_mut.vertices.as_slice()).unwrap(),
+                DeviceLayout::for_value(vertices.as_slice()).unwrap(),
             )
             .unwrap();
+
+        println!("Vertex buffer id: {:?}", vertex_buffer_id);
+
+        let index_buffer_id = resources
+            .create_buffer(
+                BufferCreateInfo {
+                    usage: BufferUsage::INDEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::for_value(indices.as_slice()).unwrap(),
+            )
+            .unwrap();
+
+        println!("Vertex buffer id: {:?}", index_buffer_id);
 
         unsafe {
             vulkano_taskgraph::execute(
@@ -72,11 +118,13 @@ impl SceneTask {
                 flight_id,
                 |_cbf, tcx| {
                     tcx.write_buffer::<[Vertex3D]>(vertex_buffer_id, ..)?
-                        .copy_from_slice(&mesh_mut.vertices);
+                        .copy_from_slice(&vertices);
+                    tcx.write_buffer::<[u32]>(index_buffer_id, ..)?
+                        .copy_from_slice(&indices);
 
                     Ok(())
                 },
-                [(vertex_buffer_id, HostAccessType::Write)],
+                [(vertex_buffer_id, HostAccessType::Write), (index_buffer_id, HostAccessType::Write)],
                 [],
                 [],
             )
@@ -85,21 +133,21 @@ impl SceneTask {
 
         SceneTask {
             pipeline: None,
-            mesh,
+            vertices,
+            indices,
+            shader,
             vertex_buffer_id,
+            index_buffer_id,
         }
     }
 
     pub fn create_pipeline(&mut self, device: Arc<Device>, subpass: Subpass, viewport: Viewport) {
-        let binding = self.mesh.clone();
-        let mesh = binding.lock().unwrap();
-
-        let vs = mesh
+        let vs = self
             .shader
             .stage_entries
             .get(&ShaderStage::Vertex)
             .expect("Error: No vertex shader found!");
-        let fs = mesh
+        let fs = self
             .shader
             .stage_entries
             .get(&ShaderStage::Fragment)
@@ -136,16 +184,12 @@ impl SceneTask {
                 }),
                 subpass: Some(subpass.clone().into()),
                 depth_stencil_state: None,
-                ..GraphicsPipelineCreateInfo::layout(mesh.shader.pipeline_layout.clone().unwrap())
+                ..GraphicsPipelineCreateInfo::layout(self.shader.pipeline_layout.clone().unwrap())
             },
         )
         .unwrap_or_else(|err| panic!("Could not create graphics pipeline: {:?}", err));
 
         self.pipeline = Some(new_pipeline);
-    }
-
-    pub fn update_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) {
-        self.mesh = mesh;
     }
 }
 
@@ -162,13 +206,10 @@ impl Task for SceneTask {
         _tcx: &mut TaskContext<'_>,
         window_context: &Self::World,
     ) -> TaskResult {
-        let binding = self.mesh.clone();
-        let mesh = binding.lock().unwrap();
-
-        let binding = mesh.shader.pipeline_layout.clone().unwrap();
+        let binding = self.shader.pipeline_layout.clone().unwrap();
         let layout = binding.as_ref();
 
-        let binding = mesh.shader.descriptor_sets.get(&0).unwrap().clone();
+        let binding = self.shader.descriptor_sets.get(&0).unwrap().clone();
         let raw_descriptor_set = binding.as_ref().0.as_raw();
 
         unsafe {
@@ -185,13 +226,16 @@ impl Task for SceneTask {
                     .as_ref()
                     .expect("Attempted to bind pipeline but there's no pipeline!"),
             )?;
+            println!("Index buffer len: {}", self.indices.len());
+            println!("Vertex buffer id: {:?}", self.vertex_buffer_id);
             cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
+            cbf.bind_index_buffer(self.index_buffer_id, 0, self.indices.len() as u64, IndexType::U32);
 
-            cbf.draw(mesh.indicies.len() as u32, 1, 0, 0)?;
+            cbf.draw_indexed(self.indices.len() as u32, 1, 0, 0, 0)?;
 
             cbf.destroy_object(binding.as_ref().0.clone());
-
-            Ok(())
         }
+
+        Ok(())
     }
 }

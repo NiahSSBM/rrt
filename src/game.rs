@@ -46,7 +46,7 @@ pub fn game_main(data: GameData) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/horse.stl"];
+    let model_paths = vec!["models/horse.stl", "models/pig.stl", "models/pig.stl"];
     let models = load_stls(model_paths);
 
     let mut meshes = vec![];

@@ -1,9 +1,9 @@
+use core::task;
 use std::collections::TryReserveError;
 
 use std::sync::{Arc, Mutex};
 
 use color::AlphaColor;
-use vulkano::instance::debug::{DebugUtilsMessenger, DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use std::vec;
@@ -15,10 +15,14 @@ use vulkano::device::{
 };
 use vulkano::format::Format;
 use vulkano::image::{ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage};
+use vulkano::instance::debug::{
+    DebugUtilsMessenger, DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
+};
 use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::MemoryPropertyFlags;
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::viewport::Viewport;
+use vulkano::render_pass::Framebuffer;
 use vulkano::shader::ShaderStage;
 use vulkano::swapchain::{ColorSpace, Surface, Swapchain, SwapchainCreateInfo};
 use vulkano::{Validated, VulkanError, VulkanLibrary};
@@ -62,10 +66,13 @@ pub struct WindowContext {
     pub scene_node_id: NodeId,
     pub resources: Arc<Resources>,
     pub flight_id: Id<Flight>,
-    pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
-    pub index_buffer_allocator: Arc<StandardMemoryAllocator>,
+    //pub vertex_buffer_allocator: Arc<StandardMemoryAllocator>,
+    //pub index_buffer_allocator: Arc<StandardMemoryAllocator>,
+    vertex_buffer_id: Id<Buffer>,
+    index_buffer_id: Id<Buffer>,
     pub queues: Vec<Arc<Queue>>,
     swapchain_id: Id<Swapchain>,
+    virtual_framebuffer_id: Id<Framebuffer>,
     virtual_swapchain_id: Id<Swapchain>,
     surface: Arc<Surface>,
     pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
@@ -86,8 +93,9 @@ impl WindowContext {
         let vulkan_extensions = InstanceExtensions {
             ext_debug_utils: true,
             ..Surface::required_extensions(event_loop).unwrap_or_else(|err| {
-            panic!("Could not determine required Vulkan extensions: {:?}", err)
-        })};
+                panic!("Could not determine required Vulkan extensions: {:?}", err)
+            })
+        };
 
         let vulkan_instance = Instance::new(
             vulkan_libary,
@@ -180,16 +188,25 @@ impl WindowContext {
 
         let virtual_framebuffer_id = task_graph.add_framebuffer();
 
+        let scene_task = SceneTask::new(
+            &vec![
+                create_temp_mesh(queues[0].clone()),
+                create_temp_mesh(queues[0].clone()),
+            ],
+            resources.clone(),
+            queues.clone(),
+            flight_id,
+            None,
+            None
+        );
+        let vertex_buffer_id = scene_task.vertex_buffer_id;
+        let index_buffer_id = scene_task.index_buffer_id;
+
         let scene_node_id = task_graph
             .create_task_node(
                 "Scene",
                 vulkano_taskgraph::QueueFamilyType::Graphics,
-                SceneTask::new(
-                    create_temp_mesh(queues[0].clone()),
-                    resources.clone(),
-                    queues.clone(),
-                    flight_id,
-                ),
+                scene_task,
             )
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
@@ -219,22 +236,25 @@ impl WindowContext {
             .create_pipeline(device.clone(), subpass, viewport.clone());
 
         // Allocators
-        let vertex_buffer_allocator =
-            Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let index_buffer_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        //let vertex_buffer_allocator =
+        //    Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        //let index_buffer_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
         Self {
-            platform: platform,
+            platform,
             window,
             device,
             task_graph,
             scene_node_id,
             resources,
             flight_id,
-            vertex_buffer_allocator,
-            index_buffer_allocator,
-            queues: queues,
+            //vertex_buffer_allocator,
+            //index_buffer_allocator,
+            vertex_buffer_id,
+            index_buffer_id,
+            queues,
             swapchain_id,
+            virtual_framebuffer_id,
             virtual_swapchain_id,
             surface,
             meshes: vec![],
@@ -251,14 +271,6 @@ impl WindowContext {
     pub fn add_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
         self.meshes.push(mesh.clone());
-
-        let scene_node = self.task_graph.task_node_mut(self.scene_node_id).unwrap();
-        let subpass = scene_node.subpass().unwrap().clone();
-        scene_node
-            .task_mut()
-            .downcast_mut::<SceneTask>()
-            .unwrap()
-            .create_pipeline(self.device.clone(), subpass, self.viewport.clone());
 
         Ok(self)
     }
@@ -324,6 +336,74 @@ impl WindowContext {
                 AllocationCreateInfo::default(),
             )
             .unwrap();
+    }
+
+    pub fn update_taskgraph(&mut self) {
+        println!("updating taskgraph");
+
+        let mut task_graph: TaskGraph<WindowContext> =
+            TaskGraph::new(&self.resources.clone(), 16, 16);
+
+        let (swapchain_format, _) =
+            get_format_and_colorspace(self.device.clone(), self.surface.clone());
+
+        let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo {
+            image_format: swapchain_format,
+            ..Default::default()
+        });
+
+        let virtual_framebuffer_id = task_graph.add_framebuffer();
+
+        let scene_task = SceneTask::new(
+            &self.meshes,
+            self.resources.clone(),
+            self.queues.clone(),
+            self.flight_id,
+            Some(self.vertex_buffer_id),
+            Some(self.index_buffer_id),
+        );
+        let vertex_buffer_id = scene_task.vertex_buffer_id;
+        let index_buffer_id = scene_task.index_buffer_id;
+
+        let scene_node_id = task_graph
+            .create_task_node(
+                "Scene",
+                vulkano_taskgraph::QueueFamilyType::Graphics,
+                scene_task,
+            )
+            .framebuffer(virtual_framebuffer_id)
+            .color_attachment(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_WRITE,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo::default(),
+            )
+            .build();
+
+        let mut task_graph = unsafe {
+            task_graph.compile(&CompileInfo {
+                queues: &[&self.queues[0]],
+                present_queue: Some(&self.queues[0]),
+                flight_id: self.flight_id,
+                ..Default::default()
+            })
+        }
+        .unwrap();
+
+        let scene_node = task_graph.task_node_mut(scene_node_id).unwrap();
+        let subpass = scene_node.subpass().unwrap().clone();
+        scene_node
+            .task_mut()
+            .downcast_mut::<SceneTask>()
+            .unwrap()
+            .create_pipeline(self.device.clone(), subpass, self.viewport.clone());
+
+        self.task_graph = task_graph;
+        self.virtual_framebuffer_id = virtual_framebuffer_id;
+        self.virtual_swapchain_id = virtual_swapchain_id;
+        self.scene_node_id = scene_node_id;
+        self.vertex_buffer_id = vertex_buffer_id;
+        self.index_buffer_id = index_buffer_id;
     }
 }
 
