@@ -17,8 +17,7 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::Platform;
-use crate::vgfx::update_vertex_buffer;
+use crate::vgfx::{Platform};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -124,7 +123,6 @@ impl ApplicationHandler for App {
                         match event {
                             Ok(e) => match e {
                                 RenderEvent::AddMesh(mesh) => {
-                                    println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
@@ -148,7 +146,7 @@ impl ApplicationHandler for App {
 
                         // Runs if shaders or perspective is updated
                         if should_update_pipelines {
-                            //update_pipelines(window_context);
+                            window_context.update_taskgraph();
                         }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing

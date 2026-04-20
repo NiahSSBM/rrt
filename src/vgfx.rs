@@ -196,6 +196,7 @@ impl WindowContext {
             resources.clone(),
             queues.clone(),
             flight_id,
+            swapchain_id.current_image_id(),
             None,
             None
         );
@@ -211,9 +212,13 @@ impl WindowContext {
             .framebuffer(virtual_framebuffer_id)
             .color_attachment(
                 virtual_swapchain_id.current_image_id(),
-                AccessTypes::COLOR_ATTACHMENT_WRITE,
+                AccessTypes::COLOR_ATTACHMENT_WRITE | AccessTypes::COLOR_ATTACHMENT_READ,
                 ImageLayoutType::Optimal,
-                &AttachmentInfo::default(),
+                &AttachmentInfo {
+                    clear: true,
+                    format: swapchain_format,
+                    ..Default::default()
+                },
             )
             .build();
 
@@ -339,10 +344,8 @@ impl WindowContext {
     }
 
     pub fn update_taskgraph(&mut self) {
-        println!("updating taskgraph");
-
         let mut task_graph: TaskGraph<WindowContext> =
-            TaskGraph::new(&self.resources.clone(), 16, 16);
+            TaskGraph::new(&self.resources, 16, 16);
 
         let (swapchain_format, _) =
             get_format_and_colorspace(self.device.clone(), self.surface.clone());
@@ -359,9 +362,11 @@ impl WindowContext {
             self.resources.clone(),
             self.queues.clone(),
             self.flight_id,
+            virtual_swapchain_id.current_image_id(),
             Some(self.vertex_buffer_id),
             Some(self.index_buffer_id),
         );
+
         let vertex_buffer_id = scene_task.vertex_buffer_id;
         let index_buffer_id = scene_task.index_buffer_id;
 
@@ -376,7 +381,11 @@ impl WindowContext {
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::COLOR_ATTACHMENT_WRITE,
                 ImageLayoutType::Optimal,
-                &AttachmentInfo::default(),
+                &AttachmentInfo {
+                    clear: true,
+                    format: swapchain_format,
+                    ..Default::default()
+                }
             )
             .build();
 
@@ -554,7 +563,7 @@ pub fn update_vertex_buffer(
     for mesh_mutex in &meshes {
         let mesh = mesh_mutex.lock().unwrap();
         verticies = combine_vec(vec![verticies, mesh.vertices.clone()]);
-        indicies = combine_vec(vec![indicies, mesh.indicies.clone()]);
+        indicies = combine_vec(vec![indicies, mesh.indices.clone()]);
     }
 
     // Buffer::from_iter will panic if there's no verticies or indicies, so we'll make one if either are empty

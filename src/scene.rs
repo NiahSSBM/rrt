@@ -3,10 +3,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use color::AlphaColor;
 use nalgebra::U32;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
+    image::Image,
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         GraphicsPipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
@@ -41,6 +43,7 @@ pub struct SceneTask {
     vertices: Vec<Vertex3D>,
     indices: Vec<u32>,
     shader: Shader,
+    image_id: Id<Image>,
     pub vertex_buffer_id: Id<Buffer>,
     pub index_buffer_id: Id<Buffer>,
 }
@@ -51,23 +54,10 @@ impl SceneTask {
         resources: Arc<Resources>,
         queues: Vec<Arc<Queue>>,
         flight_id: Id<Flight>,
+        image_id: Id<Image>,
         vertex_buffer_id: Option<Id<Buffer>>,
         index_buffer_id: Option<Id<Buffer>>,
     ) -> Self {
-        let mut vertices: Vec<Vertex3D> = vec![];
-        let mut indices: Vec<u32> = vec![];
-        let mut shader: Option<Shader> = None;
-        for mesh_mutex in meshes {
-            let mesh = mesh_mutex.lock().unwrap();
-            vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
-            indices = combine_vec(vec![indices, mesh.indicies.clone()]);
-            shader = Some(mesh.shader.clone());
-        }
-
-        let shader = shader.expect("No meshes when creating new Scene Task!");
-
-        println!("new scenetask");
-        println!("vertices len: {}", vertices.len());
 
         if vertex_buffer_id.is_some() {
             unsafe { resources.remove_buffer(vertex_buffer_id.unwrap()).unwrap() };
@@ -77,39 +67,50 @@ impl SceneTask {
             unsafe { resources.remove_buffer(index_buffer_id.unwrap()).unwrap() };
         }
 
-        let vertex_buffer_id = resources
-            .create_buffer(
-                BufferCreateInfo {
-                    usage: BufferUsage::VERTEX_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::for_value(vertices.as_slice()).unwrap(),
-            )
-            .unwrap();
+        let mut vertices: Vec<Vertex3D> = vec![];
+        let mut indices: Vec<u32> = vec![];
+        let mut shader: Option<Shader> = None;
+        for mesh_mutex in meshes {
+            let mesh = mesh_mutex.lock().unwrap();
+            let offset_indices = mesh
+                .indices
+                .clone()
+                .iter()
+                .map(|index| *index + vertices.len() as u32)
+                .collect();
 
-        println!("Vertex buffer id: {:?}", vertex_buffer_id);
+            vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
+            indices = combine_vec(vec![indices, offset_indices]);
+            shader = Some(mesh.shader.clone());
+        }
 
-        let index_buffer_id = resources
-            .create_buffer(
-                BufferCreateInfo {
-                    usage: BufferUsage::INDEX_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::for_value(indices.as_slice()).unwrap(),
-            )
-            .unwrap();
+        let shader = shader.expect("No meshes when creating new Scene Task!");
 
-        println!("Vertex buffer id: {:?}", index_buffer_id);
+        let vertex_buffer_id = resources.create_buffer(
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            DeviceLayout::for_value(vertices.as_slice()).unwrap(),
+        ).unwrap();
+
+        let index_buffer_id = resources.create_buffer(
+            BufferCreateInfo {
+                usage: BufferUsage::INDEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            DeviceLayout::for_value(indices.as_slice()).unwrap(),
+        ).unwrap();
 
         unsafe {
             vulkano_taskgraph::execute(
@@ -124,7 +125,10 @@ impl SceneTask {
 
                     Ok(())
                 },
-                [(vertex_buffer_id, HostAccessType::Write), (index_buffer_id, HostAccessType::Write)],
+                [
+                    (vertex_buffer_id, HostAccessType::Write),
+                    (index_buffer_id, HostAccessType::Write),
+                ],
                 [],
                 [],
             )
@@ -136,6 +140,7 @@ impl SceneTask {
             vertices,
             indices,
             shader,
+            image_id,
             vertex_buffer_id,
             index_buffer_id,
         }
@@ -196,8 +201,8 @@ impl SceneTask {
 impl Task for SceneTask {
     type World = WindowContext;
 
-    fn clear_values(&self, _clear_values: &mut ClearValues<'_>) {
-        //clear_values.set(self.bloom_image_id, [0.0; 4]);
+    fn clear_values(&self, clear_values: &mut ClearValues<'_>) {
+        clear_values.set(self.image_id, [0.0; 4]);
     }
 
     unsafe fn execute(
@@ -214,6 +219,13 @@ impl Task for SceneTask {
 
         unsafe {
             cbf.set_viewport(0, slice::from_ref(&window_context.viewport))?;
+            cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
+            cbf.bind_index_buffer(
+                self.index_buffer_id,
+                0,
+                self.indices.len() as u64,
+                IndexType::U32,
+            )?;
             cbf.as_raw().bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 layout,
@@ -226,10 +238,6 @@ impl Task for SceneTask {
                     .as_ref()
                     .expect("Attempted to bind pipeline but there's no pipeline!"),
             )?;
-            println!("Index buffer len: {}", self.indices.len());
-            println!("Vertex buffer id: {:?}", self.vertex_buffer_id);
-            cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[])?;
-            cbf.bind_index_buffer(self.index_buffer_id, 0, self.indices.len() as u64, IndexType::U32);
 
             cbf.draw_indexed(self.indices.len() as u32, 1, 0, 0, 0)?;
 

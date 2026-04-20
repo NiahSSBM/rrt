@@ -9,7 +9,7 @@ pub struct Mesh2D {
 #[derive(Clone)]
 pub struct Mesh3D {
     pub vertices: Vec<Vertex3D>,
-    pub indicies: Vec<u32>,
+    pub indices: Vec<u32>,
     pub shader: Shader,
 }
 
@@ -23,10 +23,10 @@ impl Mesh2D {
 }
 
 impl Mesh3D {
-    pub fn new(vertices: Vec<Vertex3D>, indicies: Vec<u32>, shader: Shader) -> Self {
+    pub fn new(vertices: Vec<Vertex3D>, indices: Vec<u32>, shader: Shader) -> Self {
         Self {
             vertices,
-            indicies,
+            indices,
             shader,
         }
     }
