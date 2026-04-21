@@ -81,7 +81,7 @@ pub struct WindowContext {
 }
 
 impl WindowContext {
-    pub fn new(event_loop: &ActiveEventLoop) -> Self {
+    pub fn new(event_loop: &ActiveEventLoop, preferred_device: Option<String>) -> Self {
         let vulkan_libary = VulkanLibrary::new()
             .unwrap_or_else(|err| panic!("Couldn't load Vulkan library: {:?}", err));
 
@@ -126,7 +126,7 @@ impl WindowContext {
                 physical_device.properties().device_name,
             );
         }
-        let selected_device = select_device(available_devices)
+        let selected_device = select_device(available_devices, preferred_device)
             .expect("Could not select a device! Are there not any display devices?");
         println!(
             "Selected device: {}",

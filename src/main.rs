@@ -40,7 +40,7 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let window_context = WindowContext::new(&event_loop);
+        let window_context = WindowContext::new(&event_loop, self.preferred_device.clone());
         self.window_contexts.push(window_context);
 
         for i in 0..self.window_contexts.len() {

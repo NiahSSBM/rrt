@@ -1876,7 +1876,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b434093a2de01d3b27e6246b0ececca4cc2a77f046bef06a9dc1216e3d892a91"
 dependencies = [
  "libc",
- "windows-targets 0.52.6",
+ "windows-targets",
 ]
 
 [[package]]
