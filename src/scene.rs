@@ -3,8 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use color::AlphaColor;
-use nalgebra::U32;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
@@ -40,8 +38,7 @@ use crate::{
 
 pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
-    vertices: Vec<Vertex3D>,
-    indices: Vec<u32>,
+    index_count: usize,
     shader: Shader,
     image_id: Id<Image>,
     pub vertex_buffer_id: Id<Buffer>,
@@ -137,8 +134,7 @@ impl SceneTask {
 
         SceneTask {
             pipeline: None,
-            vertices,
-            indices,
+            index_count: indices.len(),
             shader,
             image_id,
             vertex_buffer_id,
@@ -223,7 +219,7 @@ impl Task for SceneTask {
             cbf.bind_index_buffer(
                 self.index_buffer_id,
                 0,
-                self.indices.len() as u64,
+                self.index_count as u64,
                 IndexType::U32,
             )?;
             cbf.as_raw().bind_descriptor_sets(
@@ -239,7 +235,7 @@ impl Task for SceneTask {
                     .expect("Attempted to bind pipeline but there's no pipeline!"),
             )?;
 
-            cbf.draw_indexed(self.indices.len() as u32, 1, 0, 0, 0)?;
+            cbf.draw_indexed(self.index_count as u32, 1, 0, 0, 0)?;
 
             cbf.destroy_object(binding.as_ref().0.clone());
         }

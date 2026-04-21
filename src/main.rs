@@ -112,7 +112,7 @@ impl ApplicationHandler for App {
                         }
 
                         let mut should_update_buffers = false;
-                        let mut should_update_pipelines = false;
+                        let mut should_update_taskgraph = false;
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -128,25 +128,15 @@ impl ApplicationHandler for App {
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
                                 }
-                                RenderEvent::UpdatePipelines => {
-                                    should_update_pipelines = true;
+                                RenderEvent::UpdateTaskGraph => {
+                                    should_update_taskgraph = true;
                                 }
                             },
                             Err(_) => (),
                         }
-                        // Runs if verticies are changed
-                        if should_update_buffers {
-                            //update_vertex_buffer(
-                            //    window_context.meshes.clone(),
-                            //    window_context.vertex_buffer_allocator.clone(),
-                            //    window_context.index_buffer_allocator.clone(),
-                            //);
-                            window_context.update_taskgraph();
-                        }
-
-                        // Runs if shaders or perspective is updated
-                        if should_update_pipelines {
-                            window_context.update_taskgraph();
+                        // Runs if verticies are changed or if shaders or perspective is updated
+                        if should_update_buffers | should_update_taskgraph{
+                            window_context.recreate_taskgraph();
                         }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing

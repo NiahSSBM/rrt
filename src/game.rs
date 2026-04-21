@@ -25,7 +25,7 @@ use crate::shader::Vertex3D;
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
     UpdateVertexBuffer,
-    UpdatePipelines,
+    UpdateTaskGraph,
 }
 
 pub enum GameEvent {
@@ -137,8 +137,8 @@ pub fn game_main(data: GameData) {
 
         thread::sleep(Duration::from_millis(16));
         data.to_render
-            .send(RenderEvent::UpdatePipelines)
-            .expect("Failed to request pipeline update!");
+            .send(RenderEvent::UpdateTaskGraph)
+            .expect("Failed to request task graph update!");
     }
 }
 
