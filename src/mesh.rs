@@ -2,31 +2,31 @@ use crate::shader::{Shader, Vertex2D, Vertex3D};
 
 #[derive(Clone)]
 pub struct Mesh2D {
-    pub verticies: Vec<Vertex2D>,
+    pub vertices: Vec<Vertex2D>,
     pub shader: Shader,
 }
 
 #[derive(Clone)]
 pub struct Mesh3D {
-    pub verticies: Vec<Vertex3D>,
-    pub indicies: Vec<u32>,
+    pub vertices: Vec<Vertex3D>,
+    pub indices: Vec<u32>,
     pub shader: Shader,
 }
 
 impl Mesh2D {
-    pub fn new(verts: Vec<Vertex2D>, shader: Shader) -> Self {
+    pub fn new(vertices: Vec<Vertex2D>, shader: Shader) -> Self {
         Self {
-            verticies: verts,
-            shader: shader,
+            vertices,
+            shader,
         }
     }
 }
 
 impl Mesh3D {
-    pub fn new(verticies: Vec<Vertex3D>, indicies: Vec<u32>, shader: Shader) -> Self {
+    pub fn new(vertices: Vec<Vertex3D>, indices: Vec<u32>, shader: Shader) -> Self {
         Self {
-            verticies,
-            indicies,
+            vertices,
+            indices,
             shader,
         }
     }

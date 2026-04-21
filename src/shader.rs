@@ -1,11 +1,9 @@
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
-use nalgebra::{Matrix, Matrix4, Point3, Vector, Vector3};
+use nalgebra::Matrix4;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
-    mem::discriminant,
-    ops::Add,
     sync::Arc,
     vec,
 };
@@ -65,7 +63,7 @@ impl AdditionalShaderProperties {
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone,
+    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
 )]
 #[repr(C)]
 pub struct Vertex2D {
@@ -76,7 +74,7 @@ pub struct Vertex2D {
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone,
+    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
 )]
 #[repr(C)]
 pub struct Vertex3D {

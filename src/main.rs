@@ -1,25 +1,23 @@
 mod game;
 mod mesh;
+mod scene;
 pub mod shader;
 mod vgfx;
 
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread, usize};
 use vgfx::WindowContext;
-use vgfx::{init_vulkano, recreate_swapchain, redraw, resize_window};
-use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    window::WindowId,
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::update_vertex_buffer;
-use crate::vgfx::{Platform, update_pipelines};
+use crate::vgfx::{Platform};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -41,21 +39,17 @@ impl ApplicationHandler for App {
             );
             return;
         }
-        for i in 0..self.window_contexts.len() {
-            let window = Arc::new(
-                event_loop
-                    .create_window(Window::default_attributes())
-                    .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
-            );
-            self.window_contexts[i].window = Some(window);
-            init_vulkano(&mut self.window_contexts[i], self.preferred_device.clone());
 
+        let window_context = WindowContext::new(&event_loop);
+        self.window_contexts.push(window_context);
+
+        for i in 0..self.window_contexts.len() {
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
             let game_data = GameData {
                 to_render,
                 from_render,
-                render_queue: self.window_contexts[i].queues.clone().unwrap()[0].clone(),
+                render_queue: self.window_contexts[i].queues.clone()[0].clone(),
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             self.window_contexts[i].game_thread_sender = Some(to_game);
@@ -72,7 +66,7 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         for window_context in &mut self.window_contexts {
-            let window = window_context.window.clone().unwrap();
+            let window = window_context.window.clone();
             if window_id == window.id() {
                 match event {
                     WindowEvent::CloseRequested => {
@@ -119,7 +113,7 @@ impl ApplicationHandler for App {
                         }
 
                         let mut should_update_buffers = false;
-                        let mut should_update_pipelines = false;
+                        let mut should_update_taskgraph = false;
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -130,27 +124,20 @@ impl ApplicationHandler for App {
                         match event {
                             Ok(e) => match e {
                                 RenderEvent::AddMesh(mesh) => {
-                                    println!("Adding Mesh");
                                     window_context.add_mesh(mesh).unwrap();
-                                    should_update_buffers = true;
                                 }
                                 RenderEvent::UpdateVertexBuffer => {
                                     should_update_buffers = true;
                                 }
-                                RenderEvent::UpdatePipelines => {
-                                    should_update_pipelines = true;
+                                RenderEvent::UpdateTaskGraph => {
+                                    should_update_taskgraph = true;
                                 }
                             },
                             Err(_) => (),
                         }
-                        // Runs if verticies are changed
-                        if should_update_buffers {
-                            update_vertex_buffer(window_context);
-                        }
-
-                        // Runs if shaders or perspective is updated
-                        if should_update_pipelines {
-                            update_pipelines(window_context);
+                        // Runs if verticies are changed or if shaders or perspective is updated
+                        if should_update_buffers | should_update_taskgraph{
+                            window_context.recreate_taskgraph();
                         }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing
@@ -167,15 +154,15 @@ impl ApplicationHandler for App {
 
                         if window_context.should_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
-                            recreate_swapchain(window_context);
+                            window_context.recreate_swapchain();
 
                             if window_context.should_resize {
                                 window_context.should_resize = false;
-                                resize_window(window_context);
+                                window_context.resize_window();
                             }
                         }
 
-                        redraw(window_context);
+                        window_context.redraw();
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
@@ -209,11 +196,8 @@ fn main() {
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // Additional windows can be added by simply creating another window context and adding it to the app window array below
-    let window_context = WindowContext::new(&event_loop);
-
     let mut app = App {
-        window_contexts: vec![window_context],
+        window_contexts: vec![],
         preferred_device,
         ..Default::default()
     };

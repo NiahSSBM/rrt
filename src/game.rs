@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::f32::consts::E;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -14,23 +13,19 @@ use nalgebra::Point3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
-use vulkano::buffer::view;
 use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
 
-use crate::mesh::Mesh2D;
 use crate::mesh::Mesh3D;
 use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
-use crate::shader::Vertex2D;
 use crate::shader::Vertex3D;
-use crate::shader::fs_custom::load;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
     UpdateVertexBuffer,
-    UpdatePipelines,
+    UpdateTaskGraph,
 }
 
 pub enum GameEvent {
@@ -51,7 +46,7 @@ pub fn game_main(data: GameData) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/cat.stl"];
+    let model_paths = vec!["models/horse.stl", "models/pig.stl"];
     let models = load_stls(model_paths);
 
     let mut meshes = vec![];
@@ -142,8 +137,8 @@ pub fn game_main(data: GameData) {
 
         thread::sleep(Duration::from_millis(16));
         data.to_render
-            .send(RenderEvent::UpdatePipelines)
-            .expect("Failed to request pipeline update!");
+            .send(RenderEvent::UpdateTaskGraph)
+            .expect("Failed to request task graph update!");
     }
 }
 
