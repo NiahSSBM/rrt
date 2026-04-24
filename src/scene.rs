@@ -36,10 +36,11 @@ use crate::{
     vgfx::WindowContext,
 };
 
+#[derive(Clone)]
 pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
     index_count: usize,
-    shader: Shader,
+    pub shader: Shader,
     image_id: Id<Image>,
     pub vertex_buffer_id: Id<Buffer>,
     pub index_buffer_id: Id<Buffer>,
@@ -116,9 +117,9 @@ impl SceneTask {
                 flight_id,
                 |_cbf, tcx| {
                     tcx.write_buffer::<[Vertex3D]>(vertex_buffer_id, ..)?
-                        .copy_from_slice(&vertices);
+                        .copy_from_slice(vertices.as_slice());
                     tcx.write_buffer::<[u32]>(index_buffer_id, ..)?
-                        .copy_from_slice(&indices);
+                        .copy_from_slice(indices.as_slice());
 
                     Ok(())
                 },
@@ -197,8 +198,8 @@ impl SceneTask {
 impl Task for SceneTask {
     type World = WindowContext;
 
-    fn clear_values(&self, clear_values: &mut ClearValues<'_>) {
-        clear_values.set(self.image_id, [0.0; 4]);
+    fn clear_values(&self, _clear_values: &mut ClearValues<'_>) {
+        //clear_values.set(self.image_id, [0.0; 4]);
     }
 
     unsafe fn execute(

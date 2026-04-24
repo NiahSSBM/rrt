@@ -8,7 +8,7 @@ use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread, usize};
 use vgfx::WindowContext;
-use winit::platform::x11::EventLoopBuilderExtX11;
+use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -17,7 +17,7 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::{Platform};
+use crate::vgfx::Platform;
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -135,22 +135,21 @@ impl ApplicationHandler for App {
                             },
                             Err(_) => (),
                         }
-                        // Runs if verticies are changed or if shaders or perspective is updated
-                        if should_update_buffers | should_update_taskgraph{
-                            window_context.recreate_taskgraph();
-                        }
 
                         // This logic is here so we don't end up regenerating pipelines every frame while resizing
                         // Unless we're on X11, which needs to be resized when requested
                         if window_context.requested_resize
                             && (window_context.last_resized.unwrap().elapsed()
-                                > Duration::from_secs_f32(0.5)
+                                > Duration::from_secs_f32(0.0)
                                 || window_context.platform == Platform::X11)
                         {
                             window_context.last_resized = Some(Instant::now());
                             window_context.should_resize = true;
                             window_context.requested_resize = false;
                         }
+
+                        let resources = window_context.resources.clone();
+                        let flight = resources.flight(window_context.flight_id).unwrap();
 
                         if window_context.should_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
@@ -162,7 +161,18 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Runs if verticies are changed or if shaders or perspective is updated
+                        if should_update_buffers {
+                            window_context.recreate_buffers();
+                        }
+                        if should_update_taskgraph {
+                            window_context.recreate_taskgraph();
+                        }
+
                         window_context.redraw();
+
+                        flight.wait(None).unwrap();
+
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
@@ -190,8 +200,9 @@ fn main() {
 
     // Start initializing the window
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
-    // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing wayland
+    // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing x11
     let event_loop = EventLoop::builder()
+        .with_wayland()
         .build()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);

@@ -407,7 +407,7 @@ fn push_descriptor_set(
     // Match each descriptor set layout binding with the data we have for each binding =
     for (binding, _) in descriptor_set_with_data.layout.bindings() {
         // Create a host visible buffer with the data we have for this binding
-        let host_buffer = Buffer::from_data(
+        let host_buffer: Subbuffer<[u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> = Buffer::from_data(
             host_buffer_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC,
@@ -456,7 +456,7 @@ fn push_descriptor_set(
 
     descriptor_sets.insert(0, DescriptorSetWithOffsets::new(descriptor_set.clone(), []));
 
-    // Create a pipeline to copy our data from the host to the device
+// Create a pipeline to copy our data from the host to the device
     let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
         queue.device().clone(),
         vulkano::pipeline::layout::PipelineLayoutCreateInfo {

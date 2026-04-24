@@ -1,6 +1,5 @@
 use std::collections::TryReserveError;
 
-use std::io::empty;
 use std::sync::{Arc, Mutex};
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -9,13 +8,13 @@ use std::vec;
 use vulkano::buffer::Buffer;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue, QueueCreateFlags, QueueCreateInfo
+    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue,
+    QueueCreateFlags, QueueCreateInfo,
 };
 use vulkano::format::Format;
-use vulkano::image::{ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage};
+use vulkano::image::ImageUsage;
 use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::MemoryPropertyFlags;
-use vulkano::memory::allocator::AllocationCreateInfo;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::Framebuffer;
 use vulkano::shader::ShaderStage;
@@ -56,9 +55,9 @@ pub enum Platform {
 
 pub struct WindowContext {
     pub window: Arc<Window>,
-    pub device: Arc<Device>,
     pub task_graph: ExecutableTaskGraph<Self>,
     pub scene_node_id: NodeId,
+    scene_task: SceneTask,
     pub resources: Arc<Resources>,
     pub flight_id: Id<Flight>,
     vertex_buffer_id: Id<Buffer>,
@@ -68,7 +67,6 @@ pub struct WindowContext {
     virtual_framebuffer_id: Id<Framebuffer>,
     virtual_swapchain_id: Id<Swapchain>,
     swapchain_format: Format,
-    surface: Arc<Surface>,
     pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
     pub should_resize: bool,
     pub requested_resize: bool,
@@ -151,15 +149,13 @@ impl WindowContext {
 
         // Initialize resources
         let resources = Resources::new(&device, &ResourcesCreateInfo::default());
-        let flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
+        let flight_id = resources.create_flight(surface_capabilities.min_image_count).unwrap();
         let swapchain_id = resources
             .create_swapchain(
                 flight_id,
                 surface.clone(),
                 SwapchainCreateInfo {
-                    min_image_count: surface_capabilities
-                        .min_image_count
-                        .max(MIN_SWAPCHAIN_IMAGES),
+                    min_image_count: surface_capabilities.min_image_count,
                     image_format: swapchain_format,
                     image_extent: window.inner_size().into(),
                     image_usage: ImageUsage::COLOR_ATTACHMENT,
@@ -177,6 +173,7 @@ impl WindowContext {
         let (
             task_graph,
             scene_node_id,
+            scene_task,
             vertex_buffer_id,
             index_buffer_id,
             virtual_framebuffer_id,
@@ -186,20 +183,16 @@ impl WindowContext {
             swapchain_format,
             queues.clone(),
             flight_id,
-            None,
-            None,
             viewport.clone(),
-            vec![
-                create_temp_mesh(queues[0].clone()),
-            ],
+            vec![create_temp_mesh(queues[0].clone())],
         );
 
         Self {
             platform,
             window,
-            device,
             task_graph,
             scene_node_id,
+            scene_task,
             resources,
             flight_id,
             vertex_buffer_id,
@@ -209,7 +202,6 @@ impl WindowContext {
             virtual_framebuffer_id,
             virtual_swapchain_id,
             swapchain_format,
-            surface,
             meshes: vec![],
             should_resize: false,
             requested_resize: false,
@@ -241,10 +233,6 @@ impl WindowContext {
     }
 
     pub fn redraw(&mut self) {
-        let flight = self.resources.flight(self.flight_id).unwrap();
-
-        flight.wait(None).unwrap();
-
         let resource_map =
             resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id)
                 .unwrap();
@@ -266,50 +254,99 @@ impl WindowContext {
         }
     }
 
-    pub fn resize_window(&mut self) {
-        let (format, _) = get_format_and_colorspace(self.device.clone(), self.surface.clone());
-
-        self.resources
-            .create_image(
-                ImageCreateInfo {
-                    flags: ImageCreateFlags::MUTABLE_FORMAT,
-                    image_type: ImageType::Dim2d,
-                    format,
-                    view_formats: Default::default(),
-                    extent: self
-                        .resources
-                        .swapchain(self.swapchain_id)
-                        .unwrap()
-                        .images()[0]
-                        .extent(),
-                    mip_levels: 1,
-                    usage: ImageUsage::COLOR_ATTACHMENT,
-                    ..Default::default()
-                },
-                AllocationCreateInfo::default(),
-            )
-            .unwrap();
-    }
+    pub fn resize_window(&mut self) {/* Something will go here eventually probably */}
 
     pub fn recreate_taskgraph(&mut self) {
-        (
-            self.task_graph,
-            self.scene_node_id,
-            self.vertex_buffer_id,
-            self.index_buffer_id,
-            self.virtual_framebuffer_id,
-            self.virtual_swapchain_id,
-        ) = create_taskgraph(
+        let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&self.resources, 16, 16);
+
+        let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo {
+            image_format: self.swapchain_format,
+            ..Default::default()
+        });
+
+        let virtual_framebuffer_id = task_graph.add_framebuffer();
+
+        self.scene_task.shader = self.meshes.iter().next().unwrap().lock().unwrap().shader.clone();
+
+        let scene_node_id = task_graph
+            .create_task_node(
+                "Scene",
+                vulkano_taskgraph::QueueFamilyType::Graphics,
+                self.scene_task.clone(),
+            )
+            .framebuffer(virtual_framebuffer_id)
+            .color_attachment(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_WRITE,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo {
+                    clear: true,
+                    format: self.swapchain_format,
+                    ..Default::default()
+                },
+            )
+            .build();
+
+        let mut task_graph = unsafe {
+            task_graph.compile(&CompileInfo {
+                queues: &[&self.queues[0]],
+                present_queue: Some(&self.queues[0]),
+                flight_id: self.flight_id,
+                ..Default::default()
+            })
+        }
+        .unwrap();
+
+        let scene_node = task_graph.task_node_mut(scene_node_id).unwrap();
+        let subpass = scene_node.subpass().unwrap().clone();
+        scene_node
+            .task_mut()
+            .downcast_mut::<SceneTask>()
+            .unwrap()
+            .create_pipeline(
+                self.queues[0].device().clone(),
+                subpass,
+                self.viewport.clone(),
+            );
+
+        self.task_graph = task_graph;
+        self.scene_node_id = scene_node_id;
+        self.virtual_framebuffer_id = virtual_framebuffer_id;
+        self.virtual_swapchain_id = virtual_swapchain_id;
+    }
+
+    pub fn recreate_buffers(&mut self) {
+        (self.scene_task, self.vertex_buffer_id, self.index_buffer_id) = create_buffers(
             self.resources.clone(),
-            self.swapchain_format,
             self.queues.clone(),
             self.flight_id,
-            Some(self.vertex_buffer_id),
-            Some(self.index_buffer_id),
-            self.viewport.clone(),
+            self.virtual_swapchain_id,
             self.meshes.clone(),
         );
     }
+}
+
+fn create_buffers(
+    resources: Arc<Resources>,
+    queues: Vec<Arc<Queue>>,
+    flight_id: Id<Flight>,
+    virtual_swapchain_id: Id<Swapchain>,
+    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+) -> (SceneTask, Id<Buffer>, Id<Buffer>) {
+    let scene_task = SceneTask::new(
+        &meshes,
+        resources.clone(),
+        queues.clone(),
+        flight_id,
+        virtual_swapchain_id.current_image_id(),
+        None,
+        None,
+    );
+
+    let vertex_buffer_id = scene_task.vertex_buffer_id;
+    let index_buffer_id = scene_task.index_buffer_id;
+
+    (scene_task, vertex_buffer_id, index_buffer_id)
 }
 
 fn create_taskgraph(
@@ -317,13 +354,12 @@ fn create_taskgraph(
     swapchain_format: Format,
     queues: Vec<Arc<Queue>>,
     flight_id: Id<Flight>,
-    vertex_buffer_id: Option<Id<Buffer>>,
-    index_buffer_id: Option<Id<Buffer>>,
     viewport: Viewport,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
 ) -> (
     ExecutableTaskGraph<WindowContext>,
     NodeId,
+    SceneTask,
     Id<Buffer>,
     Id<Buffer>,
     Id<Framebuffer>,
@@ -338,24 +374,19 @@ fn create_taskgraph(
 
     let virtual_framebuffer_id = task_graph.add_framebuffer();
 
-    let scene_task = SceneTask::new(
-        &meshes,
-        resources.clone(),
+    let (scene_task, vertex_buffer_id, index_buffer_id) = create_buffers(
+        resources,
         queues.clone(),
         flight_id,
-        virtual_swapchain_id.current_image_id(),
-        vertex_buffer_id,
-        index_buffer_id,
+        virtual_swapchain_id,
+        meshes,
     );
-
-    let vertex_buffer_id = scene_task.vertex_buffer_id;
-    let index_buffer_id = scene_task.index_buffer_id;
 
     let scene_node_id = task_graph
         .create_task_node(
             "Scene",
             vulkano_taskgraph::QueueFamilyType::Graphics,
-            scene_task,
+            scene_task.clone(),
         )
         .framebuffer(virtual_framebuffer_id)
         .color_attachment(
@@ -391,6 +422,7 @@ fn create_taskgraph(
     (
         task_graph,
         scene_node_id,
+        scene_task,
         vertex_buffer_id,
         index_buffer_id,
         virtual_framebuffer_id,
