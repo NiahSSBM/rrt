@@ -24,6 +24,7 @@ use vulkano::{
     render_pass::Subpass,
     shader::ShaderStage,
 };
+use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano_taskgraph::{
     ClearValues, Id, Task, TaskContext, TaskResult,
     command_buffer::RecordingCommandBuffer,
@@ -157,11 +158,6 @@ impl SceneTask {
 
         let vertex_input_state = Vertex3D::per_vertex().definition(&vs).unwrap();
 
-        let _depth_stencil_state = DepthStencilState {
-            depth: Some(DepthState::simple()),
-            ..Default::default()
-        };
-
         let stages = [
             PipelineShaderStageCreateInfo::new(vs.clone()),
             PipelineShaderStageCreateInfo::new(fs.clone()),
@@ -185,7 +181,13 @@ impl SceneTask {
                     ..Default::default()
                 }),
                 subpass: Some(subpass.clone().into()),
-                depth_stencil_state: None,
+                depth_stencil_state: Some(DepthStencilState {
+                    depth: Some(DepthState {
+                        write_enable: true,
+                        compare_op: CompareOp::Greater,
+                    }),
+                        ..Default::default()
+                }),
                 ..GraphicsPipelineCreateInfo::layout(self.shader.pipeline_layout.clone().unwrap())
             },
         )

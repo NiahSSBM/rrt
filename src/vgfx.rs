@@ -12,13 +12,15 @@ use vulkano::device::{
     QueueCreateFlags, QueueCreateInfo,
 };
 use vulkano::format::Format;
-use vulkano::image::ImageUsage;
+use vulkano::image::{Image, ImageCreateInfo, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::MemoryPropertyFlags;
+use vulkano::memory::allocator::AllocationCreateInfo;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::Framebuffer;
 use vulkano::shader::ShaderStage;
 use vulkano::swapchain::{ColorSpace, Surface, Swapchain, SwapchainCreateInfo};
+use vulkano::sync::Sharing;
 use vulkano::{Validated, VulkanError, VulkanLibrary};
 use vulkano_taskgraph::graph::{
     AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph,
@@ -64,8 +66,10 @@ pub struct WindowContext {
     index_buffer_id: Id<Buffer>,
     pub queues: Vec<Arc<Queue>>,
     swapchain_id: Id<Swapchain>,
+    depthbuffer_id: Id<Image>,
     virtual_framebuffer_id: Id<Framebuffer>,
     virtual_swapchain_id: Id<Swapchain>,
+    virtual_depthbuffer_id: Id<Image>,
     swapchain_format: Format,
     pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
     pub should_resize: bool,
@@ -113,7 +117,7 @@ impl WindowContext {
         let viewport = Viewport {
             offset: [0.0, 0.0],
             extent: window.inner_size().into(),
-            depth_range: 0.0..=1.0,
+            depth_range: 1.0..=0.0,
         };
 
         // Query available physical devices and select one
@@ -149,7 +153,9 @@ impl WindowContext {
 
         // Initialize resources
         let resources = Resources::new(&device, &ResourcesCreateInfo::default());
-        let flight_id = resources.create_flight(surface_capabilities.min_image_count).unwrap();
+        let flight_id = resources
+            .create_flight(surface_capabilities.min_image_count)
+            .unwrap();
         let swapchain_id = resources
             .create_swapchain(
                 flight_id,
@@ -168,6 +174,27 @@ impl WindowContext {
                 },
             )
             .unwrap();
+        let depthbuffer_id = resources.create_image(
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: Format::D32_SFLOAT,
+                view_formats: vec![],
+                extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
+                array_layers: 1,
+                mip_levels: 1,
+                samples: SampleCount::Sample1,
+                tiling: ImageTiling::Optimal,
+                usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+                stencil_usage: None,
+                sharing: Sharing::Exclusive,
+                initial_layout: Default::default(),
+                drm_format_modifiers: vec![],
+                drm_format_modifier_plane_layouts: vec![],
+                external_memory_handle_types: Default::default(),
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        ).unwrap();
 
         // Create task graph
         let (
@@ -178,13 +205,18 @@ impl WindowContext {
             index_buffer_id,
             virtual_framebuffer_id,
             virtual_swapchain_id,
+            virtual_depthbuffer_id,
         ) = create_taskgraph(
             resources.clone(),
             swapchain_format,
             queues.clone(),
             flight_id,
             viewport.clone(),
-            vec![create_temp_mesh(queues[0].clone(), resources.clone(), flight_id)],
+            vec![create_temp_mesh(
+                queues[0].clone(),
+                resources.clone(),
+                flight_id,
+            )],
         );
 
         Self {
@@ -199,8 +231,10 @@ impl WindowContext {
             index_buffer_id,
             queues,
             swapchain_id,
+            depthbuffer_id,
             virtual_framebuffer_id,
             virtual_swapchain_id,
+            virtual_depthbuffer_id,
             swapchain_format,
             meshes: vec![],
             should_resize: false,
@@ -216,7 +250,11 @@ impl WindowContext {
     pub fn add_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
 
-        mesh.lock().unwrap().shader.build(self.queues[0].clone(), self.resources.clone(), self.flight_id);
+        mesh.lock().unwrap().shader.build(
+            self.queues[0].clone(),
+            self.resources.clone(),
+            self.flight_id,
+        );
 
         self.meshes.push(mesh.clone());
 
@@ -237,10 +275,14 @@ impl WindowContext {
 
     pub fn redraw(&mut self) {
         let resource_map =
-            resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id)
+            resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id, self.virtual_depthbuffer_id => self.depthbuffer_id)
                 .unwrap();
 
-        self.resources.flight(self.flight_id).unwrap().wait(None).unwrap();
+        self.resources
+            .flight(self.flight_id)
+            .unwrap()
+            .wait(None)
+            .unwrap();
 
         match unsafe {
             self.task_graph
@@ -259,7 +301,8 @@ impl WindowContext {
         }
     }
 
-    pub fn resize_window(&mut self) {/* Something will go here eventually probably */}
+    pub fn resize_window(&mut self) { /* Something will go here eventually probably */
+    }
 
     pub fn recreate_taskgraph(&mut self) {
         let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&self.resources, 16, 16);
@@ -270,8 +313,35 @@ impl WindowContext {
         });
 
         let virtual_framebuffer_id = task_graph.add_framebuffer();
+        let virtual_depthbuffer_id = task_graph.add_image(&ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format: Format::D16_UNORM,
+            view_formats: vec![],
+            extent: [self.viewport.extent[0] as u32, self.viewport.extent[1] as u32, 1],
+            array_layers: 1,
+            mip_levels: 1,
+            samples: SampleCount::Sample1,
+            tiling: ImageTiling::Optimal,
+            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+            stencil_usage: None,
+            sharing: Sharing::Exclusive,
+            initial_layout: Default::default(),
+            drm_format_modifiers: vec![],
+            drm_format_modifier_plane_layouts: vec![],
+            external_memory_handle_types: Default::default(),
+            ..Default::default()
+        });
 
-        self.scene_task.shader = self.meshes.iter().next().unwrap().lock().unwrap().shader.clone();
+
+        self.scene_task.shader = self
+            .meshes
+            .iter()
+            .next()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .shader
+            .clone();
 
         let scene_node_id = task_graph
             .create_task_node(
@@ -287,6 +357,16 @@ impl WindowContext {
                 &AttachmentInfo {
                     clear: true,
                     format: self.swapchain_format,
+                    ..Default::default()
+                },
+            )
+            .depth_stencil_attachment(
+                virtual_depthbuffer_id,
+                AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo {
+                    clear: true,
+                    format: Format::D32_SFLOAT,
                     ..Default::default()
                 },
             )
@@ -376,6 +456,7 @@ fn create_taskgraph(
     Id<Buffer>,
     Id<Framebuffer>,
     Id<Swapchain>,
+    Id<Image>,
 ) {
     let mut task_graph: TaskGraph<WindowContext> = TaskGraph::new(&resources, 16, 16);
 
@@ -385,6 +466,24 @@ fn create_taskgraph(
     });
 
     let virtual_framebuffer_id = task_graph.add_framebuffer();
+    let virtual_depthbuffer_id = task_graph.add_image(&ImageCreateInfo {
+        image_type: ImageType::Dim2d,
+        format: Format::D32_SFLOAT,
+        view_formats: vec![],
+        extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
+        array_layers: 1,
+        mip_levels: 1,
+        samples: SampleCount::Sample1,
+        tiling: ImageTiling::Optimal,
+        usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+        stencil_usage: None,
+        sharing: Sharing::Exclusive,
+        initial_layout: Default::default(),
+        drm_format_modifiers: vec![],
+        drm_format_modifier_plane_layouts: vec![],
+        external_memory_handle_types: Default::default(),
+        ..Default::default()
+    });
 
     let (scene_task, vertex_buffer_id, index_buffer_id) = create_buffers(
         resources,
@@ -408,6 +507,16 @@ fn create_taskgraph(
             &AttachmentInfo {
                 clear: true,
                 format: swapchain_format,
+                ..Default::default()
+            },
+        )
+        .depth_stencil_attachment(
+            virtual_depthbuffer_id,
+            AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ImageLayoutType::Optimal,
+            &AttachmentInfo {
+                clear: true,
+                format: Format::D32_SFLOAT,
                 ..Default::default()
             },
         )
@@ -439,10 +548,15 @@ fn create_taskgraph(
         index_buffer_id,
         virtual_framebuffer_id,
         virtual_swapchain_id,
+        virtual_depthbuffer_id,
     )
 }
 
-fn create_temp_mesh(queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) -> Arc<Mutex<Mesh3D>> {
+fn create_temp_mesh(
+    queue: Arc<Queue>,
+    resources: Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> Arc<Mutex<Mesh3D>> {
     let stage_pipeline = std::collections::HashMap::from([
         (
             ShaderStage::Vertex,
@@ -464,10 +578,8 @@ fn create_temp_mesh(queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<
         .into(),
         nalgebra::Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     );
-    let mut tri_shaders = crate::shader::Shader::new(
-        stage_pipeline.clone(),
-        vec![perspective.clone()],
-    );
+    let mut tri_shaders =
+        crate::shader::Shader::new(stage_pipeline.clone(), vec![perspective.clone()]);
 
     tri_shaders.build(queue, resources, flight_id);
 
