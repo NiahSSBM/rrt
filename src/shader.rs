@@ -36,6 +36,8 @@ use vulkano_taskgraph::{
     resource::{Flight, HostAccessType, Resources},
 };
 
+use crate::vgfx::WindowContext;
+
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
 
@@ -111,16 +113,15 @@ impl Vertex3D {
 pub struct Shader {
     pub stage_pipeline: HashMap<ShaderStage, ShaderType>,
     pub stage_entries: HashMap<ShaderStage, EntryPoint>,
-    pub queue: Arc<Queue>,
+    queue: Option<Arc<Queue>>,
     pub pipeline_layout: Option<Arc<PipelineLayout>>,
     pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
     pub additional_properties: Vec<AdditionalShaderProperties>,
-    host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    resources: Arc<Resources>,
-    flight_id: Id<Flight>,
+    //host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    //device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
+    //command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    resources: Option<Arc<Resources>>,
 }
 
 struct VGFXDescriptorSetLayout {
@@ -165,39 +166,44 @@ impl Shader {
     pub fn new(
         stage_pipeline: HashMap<ShaderStage, ShaderType>,
         additional_properties: Vec<AdditionalShaderProperties>,
-        queue: Arc<Queue>,
-        resources: Arc<Resources>,
-        flight_id: Id<Flight>,
     ) -> Self {
         // Start with the values we have now
         // TODO: Re-use these allocators so they don't get re-created every time we make a new shader
-        let shader = Self {
+        Self {
             stage_pipeline,
             stage_entries: HashMap::new(),
-            queue: queue.clone(),
+            queue: None,
             pipeline_layout: None,
             descriptor_sets: BTreeMap::new(),
             additional_properties,
-            host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
-                queue.device().clone(),
-            )),
-            device_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
-                queue.device().clone(),
-            )),
-            descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(
-                queue.device().clone(),
-                Default::default(),
-            )),
-            command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
-                queue.device().clone(),
-                Default::default(),
-            )),
-            resources,
-            flight_id,
-        };
+            //host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
+            //    queue.device().clone(),
+            //)),
+            //device_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
+            //    queue.device().clone(),
+            //)),
+            descriptor_set_allocator: None,
+            //command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
+            //    queue.device().clone(),
+            //    Default::default(),
+            //)),
+            resources: None,
+        }
+    }
 
-        // Shader::load() populates the rest
-        shader.load()
+    pub fn build(&mut self, queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) {
+        self.queue = Some(queue.clone());
+        self.resources = Some(resources);
+        self.descriptor_set_allocator = Some(Arc::new(StandardDescriptorSetAllocator::new(
+            queue.device().clone(),
+            Default::default(),
+        )));
+
+        self.load(flight_id);
+    }
+
+    pub fn rebuild(&mut self, flight_id: Id<Flight>) {
+        self.build(self.queue.clone().unwrap(), self.resources.clone().unwrap(), flight_id);
     }
 
     // This is where the data inputs for each shader are defined
@@ -206,7 +212,15 @@ impl Shader {
     // each type of data should have it's own binding
     //
     // For each new shader, a new match leaf is required
-    fn load(&self) -> Self {
+    fn load(&mut self, flight_id: Id<Flight>) {
+        if self.queue.is_none() || self.resources.is_none() {
+            println!("WARNING: Queue or Resources are not initialized while loading shader.");
+            return
+        }
+        let queue = self.queue.clone().unwrap();
+        let device = self.queue.clone().unwrap().device().clone();
+        let resources = self.resources.clone().unwrap();
+
         let mut binding_data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> =
             BTreeMap::new();
         let mut stage_entries: HashMap<ShaderStage, EntryPoint> = HashMap::new();
@@ -224,7 +238,7 @@ impl Shader {
                     )
                     .expect("No perspective property on shader that requires perspective!");
                     (
-                        vs_default::load(self.queue.device().clone())
+                        vs_default::load(device.clone())
                             .unwrap()
                             .entry_point("main")
                             .unwrap(),
@@ -245,7 +259,7 @@ impl Shader {
                     )
                 }
                 ShaderType::VertexCustom => (
-                    vs_custom::load(self.queue.device().clone())
+                    vs_custom::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -259,7 +273,7 @@ impl Shader {
                     })),
                 ),
                 ShaderType::VertexWireframe => (
-                    vs_wireframe::load(self.queue.device().clone())
+                    vs_wireframe::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -267,7 +281,7 @@ impl Shader {
                     pad(bytes_of::<[u8; 0]>(&[])),
                 ),
                 ShaderType::FragmentDefault => (
-                    fs_default::load(self.queue.device().clone())
+                    fs_default::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -275,7 +289,7 @@ impl Shader {
                     pad(bytes_of(&fs_default::colorOffset { offset: -0.5 })),
                 ),
                 ShaderType::FragmentCustom => (
-                    fs_wireframe::load(self.queue.device().clone())
+                    fs_wireframe::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -283,7 +297,7 @@ impl Shader {
                     pad(bytes_of::<[u8; 0]>(&[])),
                 ),
                 ShaderType::FragmentWireframe => (
-                    fs_custom::load(self.queue.device().clone())
+                    fs_custom::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
@@ -297,14 +311,11 @@ impl Shader {
         }
 
         let (descriptor_sets, pipeline_layout) =
-            self.load_internal(self.queue.clone(), binding_data, self.resources.clone(), self.flight_id);
+            self.load_internal(queue.clone(), binding_data, resources, flight_id);
 
-        Shader {
-            descriptor_sets,
-            pipeline_layout: Some(pipeline_layout),
-            stage_entries: stage_entries,
-            ..self.clone()
-        }
+        self.descriptor_sets = descriptor_sets;
+        self.pipeline_layout = Some(pipeline_layout);
+        self.stage_entries = stage_entries;
     }
 
     // This function is split off from Shader::load() because
@@ -339,13 +350,13 @@ impl Shader {
 
         let (pipeline_layout, descriptor_sets) = push_descriptor_set(
             descriptor_layouts_with_data,
-            self.host_buffer_allocator.clone(),
-            self.device_buffer_allocator.clone(),
-            self.command_buffer_allocator.clone(),
-            self.descriptor_set_allocator.clone(),
+            //self.host_buffer_allocator.clone(),
+            //self.device_buffer_allocator.clone(),
+            //self.command_buffer_allocator.clone(),
+            self.descriptor_set_allocator.clone().unwrap(),
             queue.clone(),
             resources,
-            flight_id
+            flight_id,
         );
 
         (descriptor_sets, pipeline_layout)
@@ -353,9 +364,9 @@ impl Shader {
 
     // This is temporarily very simple to test what it takes to update descriptor data
     // This is for updating the perspective matrix
-    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) -> Self {
+    pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
         self.additional_properties = vec![shader_property];
-        self.load()
+        //self.load();
     }
 }
 
@@ -401,9 +412,9 @@ fn create_descriptor_set_layout(
 // - A device queue
 fn push_descriptor_set(
     descriptor_set_with_data: VGFXDescriptorSetLayoutWithData,
-    host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    //host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    //device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    //command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     queue: Arc<Queue>,
     resources: Arc<Resources>,
@@ -461,6 +472,18 @@ fn push_descriptor_set(
         device_buffers.insert(*binding, device_buffer);
     } */
 
+    // Create a pipeline to copy our data from the host to the device
+    let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
+        queue.device().clone(),
+        vulkano::pipeline::layout::PipelineLayoutCreateInfo {
+            flags: vulkano::pipeline::layout::PipelineLayoutCreateFlags::default(),
+            set_layouts: descriptor_set_layouts,
+            push_constant_ranges: Vec::new(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
     for (binding, _) in descriptor_set_with_data.layout.bindings() {
         let device_buffer = resources
             .create_buffer(
@@ -479,6 +502,12 @@ fn push_descriptor_set(
             .unwrap();
 
         //device_buffers.insert(*binding, device_buffer);
+        descriptor_writes.push(WriteDescriptorSet::buffer(
+            *binding,
+            Subbuffer::new(resources.buffer(device_buffer).unwrap().buffer().clone()),
+        ));
+
+        resources.flight(flight_id).unwrap().wait(None).unwrap();
 
         unsafe {
             vulkano_taskgraph::execute(
@@ -496,7 +525,8 @@ fn push_descriptor_set(
                 [],
                 [],
             )
-        }.unwrap();
+        }
+        .unwrap();
     }
 
     let descriptor_set = DescriptorSet::new_variable(
@@ -510,20 +540,9 @@ fn push_descriptor_set(
         vec![],
     )
     .unwrap();
-    
+
     descriptor_sets.insert(0, DescriptorSetWithOffsets::new(descriptor_set.clone(), []));
 
-    // Create a pipeline to copy our data from the host to the device
-    let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
-        queue.device().clone(),
-        vulkano::pipeline::layout::PipelineLayoutCreateInfo {
-            flags: vulkano::pipeline::layout::PipelineLayoutCreateFlags::default(),
-            set_layouts: descriptor_set_layouts,
-            push_constant_ranges: Vec::new(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
 
     // Setup a one-time command buffer to send our host buffer to the device buffer
     //let mut cbb = AutoCommandBufferBuilder::primary(
@@ -558,25 +577,6 @@ fn push_descriptor_set(
     //    .unwrap()
     //    .wait(None)
     //    .unwrap();
-
-    //unsafe {
-    //    vulkano_taskgraph::execute(
-    //        &queue,
-    //        &resources,
-    //        flight_id,
-    //        |_cbf, tcx| {
-    //            tcx.write_buffer::<[Vertex3D]>(vertex_buffer_id, ..)?
-    //                .copy_from_slice(vertices.as_slice());
-    //            tcx.write_buffer::<[u32]>(index_buffer_id, ..)?
-    //                .copy_from_slice(indices.as_slice());
-    //
-    //            Ok(())
-    //        },
-    //        host_buffer_accesses,
-    //        buffer_accesses,
-    //        image_accesses,
-    //    );
-    //}
 
     (pipeline_layout, descriptor_sets)
 }

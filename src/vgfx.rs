@@ -215,6 +215,9 @@ impl WindowContext {
 
     pub fn add_mesh(&mut self, mesh: Arc<Mutex<Mesh3D>>) -> Result<&mut Self, TryReserveError> {
         self.meshes.try_reserve(1)?;
+
+        mesh.lock().unwrap().shader.build(self.queues[0].clone(), self.resources.clone(), self.flight_id);
+
         self.meshes.push(mesh.clone());
 
         Ok(self)
@@ -236,6 +239,8 @@ impl WindowContext {
         let resource_map =
             resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id)
                 .unwrap();
+
+        self.resources.flight(self.flight_id).unwrap().wait(None).unwrap();
 
         match unsafe {
             self.task_graph
@@ -313,6 +318,13 @@ impl WindowContext {
         self.scene_node_id = scene_node_id;
         self.virtual_framebuffer_id = virtual_framebuffer_id;
         self.virtual_swapchain_id = virtual_swapchain_id;
+    }
+
+    pub fn reload_shaders(&mut self) {
+        for mutex in self.meshes.clone() {
+            let mut mesh = mutex.lock().unwrap();
+            mesh.shader.rebuild(self.flight_id);
+        }
     }
 
     pub fn recreate_buffers(&mut self) {
@@ -452,13 +464,12 @@ fn create_temp_mesh(queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<
         .into(),
         nalgebra::Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     );
-    let tri_shaders = crate::shader::Shader::new(
+    let mut tri_shaders = crate::shader::Shader::new(
         stage_pipeline.clone(),
         vec![perspective.clone()],
-        queue.clone(),
-        resources,
-        flight_id
     );
+
+    tri_shaders.build(queue, resources, flight_id);
 
     let model_verts: Vec<Vertex3D> =
         vec![Vertex3D::new([0.0, 0.0, 0.0], color::palette::css::BLACK)];

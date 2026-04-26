@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use std::{env, thread, usize};
 use vgfx::WindowContext;
 use winit::platform::wayland::EventLoopBuilderExtWayland;
+use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -116,6 +117,7 @@ impl ApplicationHandler for App {
 
                         let mut should_update_buffers = false;
                         let mut should_update_taskgraph = false;
+                        let mut should_update_shaders = false;
 
                         // Get one event sent from game thread
                         let event = window_context
@@ -134,6 +136,9 @@ impl ApplicationHandler for App {
                                 RenderEvent::UpdateTaskGraph => {
                                     should_update_taskgraph = true;
                                 }
+                                RenderEvent::UpdateShader => {
+                                    should_update_shaders = true;
+                                },
                             },
                             Err(_) => (),
                         }
@@ -169,6 +174,9 @@ impl ApplicationHandler for App {
                         }
                         if should_update_taskgraph {
                             window_context.recreate_taskgraph();
+                        }
+                        if should_update_shaders {
+                            window_context.reload_shaders();
                         }
 
                         window_context.redraw();

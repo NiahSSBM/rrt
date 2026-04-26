@@ -29,6 +29,7 @@ pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
     UpdateVertexBuffer,
     UpdateTaskGraph,
+    UpdateShader,
 }
 
 pub enum GameEvent {
@@ -65,15 +66,9 @@ pub fn game_main(data: GameData) {
         .into(),
         Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     );
-    let mut tri_shaders = Shader::new(
-        stage_pipeline.clone(),
-        vec![perspective.clone()],
-        data.render_queue.clone(),
-        data.resources,
-        data.flight_id
-    );
 
     for model in models {
+        let tri_shaders = Shader::new(stage_pipeline.clone(), vec![perspective.clone()]);
         let mut model_verts: Vec<Vertex3D> = vec![];
         let mut model_indicies: Vec<usize> = vec![];
 
@@ -92,7 +87,7 @@ pub fn game_main(data: GameData) {
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
             model_verts.clone(),
             model_indicies.iter().map(|i| i.clone() as u32).collect(),
-            tri_shaders.clone(),
+            tri_shaders,
         )));
         meshes.push(mesh);
     }
@@ -108,17 +103,6 @@ pub fn game_main(data: GameData) {
 
     let mut view_offset: f32 = 0.0;
     loop {
-        // First check if the main thread is telling us to exit
-        match data.from_render.try_recv() {
-            Ok(event) => match event {
-                GameEvent::GameClose => {
-                    println!("Game thread exiting...");
-                    break;
-                }
-            },
-            Err(_) => {}
-        }
-
         //vert_offsets += 0.01;
         view_offset += 0.05;
         perspective = AdditionalShaderProperties::Perspective(
@@ -133,16 +117,27 @@ pub fn game_main(data: GameData) {
         );
 
         for mesh in meshes.clone() {
-            tri_shaders = mesh
-                .lock()
+            mesh.lock()
                 .unwrap()
                 .shader
                 .update_descriptor(perspective.clone());
-
-            mesh.lock().unwrap().shader = tri_shaders;
         }
 
         thread::sleep(Duration::from_millis(16));
+
+        match data.from_render.try_recv() {
+            Ok(event) => match event {
+                GameEvent::GameClose => {
+                    println!("Game thread exiting...");
+                    break;
+                }
+            },
+            Err(_) => {}
+        }
+
+        data.to_render
+            .send(RenderEvent::UpdateShader)
+            .expect("Failed to request shader update!");
         data.to_render
             .send(RenderEvent::UpdateTaskGraph)
             .expect("Failed to request task graph update!");
