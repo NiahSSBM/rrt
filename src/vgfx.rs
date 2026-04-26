@@ -184,7 +184,7 @@ impl WindowContext {
             queues.clone(),
             flight_id,
             viewport.clone(),
-            vec![create_temp_mesh(queues[0].clone())],
+            vec![create_temp_mesh(queues[0].clone(), resources.clone(), flight_id)],
         );
 
         Self {
@@ -430,7 +430,7 @@ fn create_taskgraph(
     )
 }
 
-fn create_temp_mesh(queue: Arc<Queue>) -> Arc<Mutex<Mesh3D>> {
+fn create_temp_mesh(queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) -> Arc<Mutex<Mesh3D>> {
     let stage_pipeline = std::collections::HashMap::from([
         (
             ShaderStage::Vertex,
@@ -456,6 +456,8 @@ fn create_temp_mesh(queue: Arc<Queue>) -> Arc<Mutex<Mesh3D>> {
         stage_pipeline.clone(),
         vec![perspective.clone()],
         queue.clone(),
+        resources,
+        flight_id
     );
 
     let model_verts: Vec<Vertex3D> =

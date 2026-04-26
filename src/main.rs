@@ -50,6 +50,8 @@ impl ApplicationHandler for App {
                 to_render,
                 from_render,
                 render_queue: self.window_contexts[i].queues.clone()[0].clone(),
+                resources: self.window_contexts[i].resources.clone(),
+                flight_id: self.window_contexts[i].flight_id,
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             self.window_contexts[i].game_thread_sender = Some(to_game);

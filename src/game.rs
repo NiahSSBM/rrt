@@ -15,6 +15,9 @@ use rand::TryRngCore;
 use stl_io::IndexedMesh;
 use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
+use vulkano_taskgraph::Id;
+use vulkano_taskgraph::resource::Flight;
+use vulkano_taskgraph::resource::Resources;
 
 use crate::mesh::Mesh3D;
 use crate::shader::AdditionalShaderProperties;
@@ -36,6 +39,8 @@ pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
     pub from_render: mpsc::Receiver<GameEvent>,
     pub render_queue: Arc<Queue>,
+    pub resources: Arc<Resources>,
+    pub flight_id: Id<Flight>,
 }
 
 pub fn game_main(data: GameData) {
@@ -64,6 +69,8 @@ pub fn game_main(data: GameData) {
         stage_pipeline.clone(),
         vec![perspective.clone()],
         data.render_queue.clone(),
+        data.resources,
+        data.flight_id
     );
 
     for model in models {
