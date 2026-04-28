@@ -13,10 +13,7 @@ use nalgebra::Point3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
-use vulkano::device::Queue;
 use vulkano::shader::ShaderStage;
-use vulkano_taskgraph::Id;
-use vulkano_taskgraph::resource::Flight;
 use vulkano_taskgraph::resource::Resources;
 
 use crate::mesh::Mesh3D;
@@ -39,9 +36,6 @@ pub enum GameEvent {
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
     pub from_render: mpsc::Receiver<GameEvent>,
-    pub render_queue: Arc<Queue>,
-    pub resources: Arc<Resources>,
-    pub flight_id: Id<Flight>,
 }
 
 pub fn game_main(data: GameData) {
@@ -52,7 +46,7 @@ pub fn game_main(data: GameData) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/horse.stl", "models/pig.stl"];
+    let model_paths = vec!["models/horse.stl"];
     let models = load_stls(model_paths);
 
     let mut meshes = vec![];

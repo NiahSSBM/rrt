@@ -6,7 +6,6 @@ use std::{
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
-    image::Image,
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         GraphicsPipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
@@ -42,7 +41,6 @@ pub struct SceneTask {
     pipeline: Option<Arc<GraphicsPipeline>>,
     index_count: usize,
     pub shader: Shader,
-    image_id: Id<Image>,
     pub vertex_buffer_id: Id<Buffer>,
     pub index_buffer_id: Id<Buffer>,
 }
@@ -53,7 +51,6 @@ impl SceneTask {
         resources: Arc<Resources>,
         queues: Vec<Arc<Queue>>,
         flight_id: Id<Flight>,
-        image_id: Id<Image>,
         vertex_buffer_id: Option<Id<Buffer>>,
         index_buffer_id: Option<Id<Buffer>>,
     ) -> Self {
@@ -138,7 +135,6 @@ impl SceneTask {
             pipeline: None,
             index_count: indices.len(),
             shader,
-            image_id,
             vertex_buffer_id,
             index_buffer_id,
         }

@@ -15,7 +15,7 @@ use vulkano::format::Format;
 use vulkano::image::{Image, ImageCreateInfo, ImageTiling, ImageType, ImageUsage, SampleCount};
 use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::memory::MemoryPropertyFlags;
-use vulkano::memory::allocator::AllocationCreateInfo;
+use vulkano::memory::allocator::{AllocationCreateInfo, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::Framebuffer;
 use vulkano::shader::ShaderStage;
@@ -30,16 +30,13 @@ use vulkano_taskgraph::resource::{
 };
 use vulkano_taskgraph::{Id, resource_map};
 use winit::event_loop::ActiveEventLoop;
-use winit::platform::wayland::{ActiveEventLoopExtWayland, EventLoopExtWayland};
+use winit::platform::wayland::ActiveEventLoopExtWayland;
 use winit::window::Window;
 
 use crate::game::{GameEvent, RenderEvent};
 use crate::mesh::Mesh3D;
 use crate::scene::SceneTask;
 use crate::shader::Vertex3D;
-
-const MAX_FRAMES_IN_FLIGHT: u32 = 2;
-const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
 #[derive(Default, PartialEq)]
 pub enum Platform {
@@ -72,9 +69,7 @@ pub struct WindowContext {
     virtual_depthbuffer_id: Id<Image>,
     swapchain_format: Format,
     pub meshes: Vec<Arc<Mutex<Mesh3D>>>,
-    pub should_resize: bool,
     pub requested_resize: bool,
-    pub last_resized: Option<Instant>,
     pub recreate_swapchain: bool,
     pub viewport: Viewport,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
@@ -174,27 +169,13 @@ impl WindowContext {
                 },
             )
             .unwrap();
-        let depthbuffer_id = resources.create_image(
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: Format::D32_SFLOAT,
-                view_formats: vec![],
-                extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
-                array_layers: 1,
-                mip_levels: 1,
-                samples: SampleCount::Sample1,
-                tiling: ImageTiling::Optimal,
-                usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
-                stencil_usage: None,
-                sharing: Sharing::Exclusive,
-                initial_layout: Default::default(),
-                drm_format_modifiers: vec![],
-                drm_format_modifier_plane_layouts: vec![],
-                external_memory_handle_types: Default::default(),
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        ).unwrap();
+        let depthbuffer_id = resources
+            .create_image(
+                get_depthimage_createinfo(viewport.clone())
+            ,
+                AllocationCreateInfo::default(),
+            )
+            .unwrap();
 
         // Create task graph
         let (
@@ -237,9 +218,7 @@ impl WindowContext {
             virtual_depthbuffer_id,
             swapchain_format,
             meshes: vec![],
-            should_resize: false,
             requested_resize: false,
-            last_resized: None,
             recreate_swapchain: false,
             viewport,
             game_thread_receiver: None,
@@ -262,20 +241,22 @@ impl WindowContext {
     }
 
     pub fn recreate_swapchain(&mut self) {
+        self.viewport.extent = self.window.inner_size().into();
+
         self.swapchain_id = self
             .resources
             .recreate_swapchain(self.swapchain_id, |create_info| SwapchainCreateInfo {
                 image_extent: self.window.inner_size().into(),
                 ..create_info
             })
-            .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));
-
-        self.viewport.extent = self.window.inner_size().into();
+            .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));        
     }
 
     pub fn redraw(&mut self) {
         let resource_map =
-            resource_map!(&self.task_graph, self.virtual_swapchain_id => self.swapchain_id, self.virtual_depthbuffer_id => self.depthbuffer_id)
+            resource_map!(&self.task_graph, 
+                self.virtual_swapchain_id => self.swapchain_id, 
+                self.virtual_depthbuffer_id => self.depthbuffer_id)
                 .unwrap();
 
         self.resources
@@ -301,7 +282,10 @@ impl WindowContext {
         }
     }
 
-    pub fn resize_window(&mut self) { /* Something will go here eventually probably */
+    pub fn resize_window(&mut self) {
+        unsafe { self.resources.remove_image(self.depthbuffer_id)}.unwrap();
+        self.viewport.extent = self.window.inner_size().into();
+        self.depthbuffer_id = self.resources.add_image(Image::new(Arc::new(StandardMemoryAllocator::new_default(self.queues[0].device().clone())), get_depthimage_createinfo(self.viewport.clone()), AllocationCreateInfo::default()).unwrap());
     }
 
     pub fn recreate_taskgraph(&mut self) {
@@ -313,25 +297,7 @@ impl WindowContext {
         });
 
         let virtual_framebuffer_id = task_graph.add_framebuffer();
-        let virtual_depthbuffer_id = task_graph.add_image(&ImageCreateInfo {
-            image_type: ImageType::Dim2d,
-            format: Format::D16_UNORM,
-            view_formats: vec![],
-            extent: [self.viewport.extent[0] as u32, self.viewport.extent[1] as u32, 1],
-            array_layers: 1,
-            mip_levels: 1,
-            samples: SampleCount::Sample1,
-            tiling: ImageTiling::Optimal,
-            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
-            stencil_usage: None,
-            sharing: Sharing::Exclusive,
-            initial_layout: Default::default(),
-            drm_format_modifiers: vec![],
-            drm_format_modifier_plane_layouts: vec![],
-            external_memory_handle_types: Default::default(),
-            ..Default::default()
-        });
-
+        let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(self.viewport.clone()));
 
         self.scene_task.shader = self
             .meshes
@@ -362,7 +328,8 @@ impl WindowContext {
             )
             .depth_stencil_attachment(
                 virtual_depthbuffer_id,
-                AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ
+                    | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
                 ImageLayoutType::Optimal,
                 &AttachmentInfo {
                     clear: true,
@@ -412,9 +379,29 @@ impl WindowContext {
             self.resources.clone(),
             self.queues.clone(),
             self.flight_id,
-            self.virtual_swapchain_id,
             self.meshes.clone(),
         );
+    }
+}
+
+fn get_depthimage_createinfo(viewport: Viewport) -> ImageCreateInfo {
+    ImageCreateInfo {
+        image_type: ImageType::Dim2d,
+        format: Format::D32_SFLOAT,
+        view_formats: vec![],
+        extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
+        array_layers: 1,
+        mip_levels: 1,
+        samples: SampleCount::Sample1,
+        tiling: ImageTiling::Optimal,
+        usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+        stencil_usage: None,
+        sharing: Sharing::Exclusive,
+        initial_layout: Default::default(),
+        drm_format_modifiers: vec![],
+        drm_format_modifier_plane_layouts: vec![],
+        external_memory_handle_types: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -422,7 +409,6 @@ fn create_buffers(
     resources: Arc<Resources>,
     queues: Vec<Arc<Queue>>,
     flight_id: Id<Flight>,
-    virtual_swapchain_id: Id<Swapchain>,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
 ) -> (SceneTask, Id<Buffer>, Id<Buffer>) {
     let scene_task = SceneTask::new(
@@ -430,7 +416,6 @@ fn create_buffers(
         resources.clone(),
         queues.clone(),
         flight_id,
-        virtual_swapchain_id.current_image_id(),
         None,
         None,
     );
@@ -466,32 +451,10 @@ fn create_taskgraph(
     });
 
     let virtual_framebuffer_id = task_graph.add_framebuffer();
-    let virtual_depthbuffer_id = task_graph.add_image(&ImageCreateInfo {
-        image_type: ImageType::Dim2d,
-        format: Format::D32_SFLOAT,
-        view_formats: vec![],
-        extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
-        array_layers: 1,
-        mip_levels: 1,
-        samples: SampleCount::Sample1,
-        tiling: ImageTiling::Optimal,
-        usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT,
-        stencil_usage: None,
-        sharing: Sharing::Exclusive,
-        initial_layout: Default::default(),
-        drm_format_modifiers: vec![],
-        drm_format_modifier_plane_layouts: vec![],
-        external_memory_handle_types: Default::default(),
-        ..Default::default()
-    });
+    let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(viewport.clone()));
 
-    let (scene_task, vertex_buffer_id, index_buffer_id) = create_buffers(
-        resources,
-        queues.clone(),
-        flight_id,
-        virtual_swapchain_id,
-        meshes,
-    );
+    let (scene_task, vertex_buffer_id, index_buffer_id) =
+        create_buffers(resources, queues.clone(), flight_id, meshes);
 
     let scene_node_id = task_graph
         .create_task_node(
@@ -512,7 +475,8 @@ fn create_taskgraph(
         )
         .depth_stencil_attachment(
             virtual_depthbuffer_id,
-            AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            AccessTypes::DEPTH_STENCIL_ATTACHMENT_READ
+                | AccessTypes::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ImageLayoutType::Optimal,
             &AttachmentInfo {
                 clear: true,

@@ -10,10 +10,6 @@ use std::{
 use vulkano::{
     Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{
-        AutoCommandBufferBuilder, PrimaryCommandBufferAbstract,
-        allocator::StandardCommandBufferAllocator,
-    },
     descriptor_set::{
         DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
@@ -24,19 +20,17 @@ use vulkano::{
     },
     device::{Device, Queue},
     memory::allocator::{
-        AllocationCreateInfo, DeviceLayout, FreeListAllocator, GenericMemoryAllocator,
+        AllocationCreateInfo, DeviceLayout,
         MemoryTypeFilter,
     },
     pipeline::PipelineLayout,
     shader::{EntryPoint, ShaderStage, ShaderStages},
-    sync::GpuFuture,
 };
 use vulkano_taskgraph::{
     Id,
     resource::{Flight, HostAccessType, Resources},
 };
 
-use crate::vgfx::WindowContext;
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -428,7 +422,7 @@ fn push_descriptor_set(
     // We need to store each binding in their own buffers as they get pushed to the GPU seperately
     //let mut host_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
     //let mut device_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
-    let mut device_buffers: BTreeMap<u32, Id<Buffer>> = BTreeMap::new();
+    let _device_buffers: BTreeMap<u32, Id<Buffer>> = BTreeMap::new();
 
     let mut descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets> = BTreeMap::new();
     let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::new();

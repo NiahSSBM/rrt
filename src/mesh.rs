@@ -1,25 +1,10 @@
-use crate::shader::{Shader, Vertex2D, Vertex3D};
-
-#[derive(Clone)]
-pub struct Mesh2D {
-    pub vertices: Vec<Vertex2D>,
-    pub shader: Shader,
-}
+use crate::shader::{Shader, Vertex3D};
 
 #[derive(Clone)]
 pub struct Mesh3D {
     pub vertices: Vec<Vertex3D>,
     pub indices: Vec<u32>,
     pub shader: Shader,
-}
-
-impl Mesh2D {
-    pub fn new(vertices: Vec<Vertex2D>, shader: Shader) -> Self {
-        Self {
-            vertices,
-            shader,
-        }
-    }
 }
 
 impl Mesh3D {

@@ -18,7 +18,6 @@ use winit::{
 };
 
 use crate::game::{GameData, RenderEvent};
-use crate::vgfx::Platform;
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -50,9 +49,6 @@ impl ApplicationHandler for App {
             let game_data = GameData {
                 to_render,
                 from_render,
-                render_queue: self.window_contexts[i].queues.clone()[0].clone(),
-                resources: self.window_contexts[i].resources.clone(),
-                flight_id: self.window_contexts[i].flight_id,
             };
             self.window_contexts[i].game_thread_receiver = Some(from_game);
             self.window_contexts[i].game_thread_sender = Some(to_game);
@@ -143,27 +139,15 @@ impl ApplicationHandler for App {
                             Err(_) => (),
                         }
 
-                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
-                        // Unless we're on X11, which needs to be resized when requested
-                        if window_context.requested_resize
-                            && (window_context.last_resized.unwrap().elapsed()
-                                > Duration::from_secs_f32(0.0)
-                                || window_context.platform == Platform::X11)
-                        {
-                            window_context.last_resized = Some(Instant::now());
-                            window_context.should_resize = true;
-                            window_context.requested_resize = false;
-                        }
-
                         let resources = window_context.resources.clone();
                         let flight = resources.flight(window_context.flight_id).unwrap();
 
-                        if window_context.should_resize || window_context.recreate_swapchain {
+                        if window_context.requested_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
                             window_context.recreate_swapchain();
 
-                            if window_context.should_resize {
-                                window_context.should_resize = false;
+                            if window_context.requested_resize {
+                                window_context.requested_resize = false;
                                 window_context.resize_window();
                             }
                         }
@@ -186,9 +170,6 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
-                        // This logic is here so we don't end up regenerating pipelines every frame while resizing
-                        window_context.last_resized =
-                            Some(window_context.last_resized.unwrap_or(Instant::now()));
                         window_context.requested_resize = true;
                     }
                     _ => (), //println!("Event received: {:?}", event),
