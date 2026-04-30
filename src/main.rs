@@ -134,7 +134,7 @@ impl ApplicationHandler for App {
                                 }
                                 RenderEvent::UpdateShader => {
                                     should_update_shaders = true;
-                                },
+                                }
                             },
                             Err(_) => (),
                         }
@@ -164,9 +164,7 @@ impl ApplicationHandler for App {
                         }
 
                         window_context.redraw();
-
-                        flight.wait(None).unwrap();
-
+                        //flight.wait(None).unwrap();
                         window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
@@ -191,9 +189,9 @@ fn main() {
 
     // Start initializing the window
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
-    // TODO: Find a better way to change whether we're using wayland or X11. Currently we're forcing x11
+    // TODO: Find a better way to change whether we're using wayland or X11. Currently we just force either X11 or Wayland
     let event_loop = EventLoop::builder()
-        .with_x11()
+        .with_wayland()
         .build()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);

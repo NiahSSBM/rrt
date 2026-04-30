@@ -3,7 +3,6 @@ use std::collections::TryReserveError;
 use std::sync::{Arc, Mutex};
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
 use std::vec;
 use vulkano::buffer::Buffer;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
@@ -61,7 +60,7 @@ pub struct WindowContext {
     pub flight_id: Id<Flight>,
     vertex_buffer_id: Id<Buffer>,
     index_buffer_id: Id<Buffer>,
-    pub queues: Vec<Arc<Queue>>,
+    pub queue: Arc<Queue>,
     swapchain_id: Id<Swapchain>,
     depthbuffer_id: Id<Image>,
     virtual_framebuffer_id: Id<Framebuffer>,
@@ -79,6 +78,7 @@ pub struct WindowContext {
 
 impl WindowContext {
     pub fn new(event_loop: &ActiveEventLoop, preferred_device: Option<String>) -> Self {
+        // Start by initializing Vulkan
         let vulkan_libary = VulkanLibrary::new()
             .unwrap_or_else(|err| panic!("Couldn't load Vulkan library: {:?}", err));
 
@@ -98,17 +98,22 @@ impl WindowContext {
         )
         .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
 
+        // TODO: Figure out a better way to determin the platform
         let platform = match event_loop.is_wayland() {
             true => Platform::WAYLAND,
             false => Platform::X11,
         };
 
+        // Create window
         let window = Arc::new(
             event_loop
                 .create_window(Window::default_attributes())
                 .unwrap_or_else(|err| panic!("Could not create window: {:?}", err)),
         );
 
+        // Create viewport
+        // Viewport determines where we render to
+        // Depth range is reversed for better depth precision at far distances
         let viewport = Viewport {
             offset: [0.0, 0.0],
             extent: window.inner_size().into(),
@@ -131,9 +136,9 @@ impl WindowContext {
         );
 
         // Create the vulkan device and associated queues
-        let (device, queues) = create_device(selected_device.clone())
+        let (device, mut queues) = create_device(selected_device.clone())
             .unwrap_or_else(|err| panic!("Could not create graphics device: {:?}", err));
-        let queues: Vec<Arc<Queue>> = queues.collect();
+        let queue: Arc<Queue> = queues.next().expect("There are no graphics queues!");
 
         // Create the surface fom the window provided by winit
         let surface = Surface::from_window(vulkan_instance.clone(), window.clone())
@@ -147,7 +152,11 @@ impl WindowContext {
         let (swapchain_format, _) = get_format_and_colorspace(device.clone(), surface.clone());
 
         // Initialize resources
+        // Resources contain all global resources for taskgraph
+        // Only one will ever exist at any given time
         let resources = Resources::new(&device, &ResourcesCreateInfo::default());
+
+        // Create flight, swapchain, and depth buffer
         let flight_id = resources
             .create_flight(surface_capabilities.min_image_count)
             .unwrap();
@@ -171,8 +180,7 @@ impl WindowContext {
             .unwrap();
         let depthbuffer_id = resources
             .create_image(
-                get_depthimage_createinfo(viewport.clone())
-            ,
+                get_depthimage_createinfo(viewport.clone()),
                 AllocationCreateInfo::default(),
             )
             .unwrap();
@@ -190,11 +198,11 @@ impl WindowContext {
         ) = create_taskgraph(
             resources.clone(),
             swapchain_format,
-            queues.clone(),
+            queue.clone(),
             flight_id,
             viewport.clone(),
             vec![create_temp_mesh(
-                queues[0].clone(),
+                queue.clone(),
                 resources.clone(),
                 flight_id,
             )],
@@ -210,7 +218,7 @@ impl WindowContext {
             flight_id,
             vertex_buffer_id,
             index_buffer_id,
-            queues,
+            queue,
             swapchain_id,
             depthbuffer_id,
             virtual_framebuffer_id,
@@ -230,7 +238,7 @@ impl WindowContext {
         self.meshes.try_reserve(1)?;
 
         mesh.lock().unwrap().shader.build(
-            self.queues[0].clone(),
+            self.queue.clone(),
             self.resources.clone(),
             self.flight_id,
         );
@@ -249,15 +257,14 @@ impl WindowContext {
                 image_extent: self.window.inner_size().into(),
                 ..create_info
             })
-            .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));        
+            .unwrap_or_else(|e| panic!("Failed to recreate swapchain: {:?}", e));
     }
 
     pub fn redraw(&mut self) {
-        let resource_map =
-            resource_map!(&self.task_graph, 
-                self.virtual_swapchain_id => self.swapchain_id, 
+        let resource_map = resource_map!(&self.task_graph,
+                self.virtual_swapchain_id => self.swapchain_id,
                 self.virtual_depthbuffer_id => self.depthbuffer_id)
-                .unwrap();
+        .unwrap();
 
         self.resources
             .flight(self.flight_id)
@@ -283,9 +290,18 @@ impl WindowContext {
     }
 
     pub fn resize_window(&mut self) {
-        unsafe { self.resources.remove_image(self.depthbuffer_id)}.unwrap();
+        unsafe { self.resources.remove_image(self.depthbuffer_id) }.unwrap();
         self.viewport.extent = self.window.inner_size().into();
-        self.depthbuffer_id = self.resources.add_image(Image::new(Arc::new(StandardMemoryAllocator::new_default(self.queues[0].device().clone())), get_depthimage_createinfo(self.viewport.clone()), AllocationCreateInfo::default()).unwrap());
+        self.depthbuffer_id = self.resources.add_image(
+            Image::new(
+                Arc::new(StandardMemoryAllocator::new_default(
+                    self.queue.device().clone(),
+                )),
+                get_depthimage_createinfo(self.viewport.clone()),
+                AllocationCreateInfo::default(),
+            )
+            .unwrap(),
+        );
     }
 
     pub fn recreate_taskgraph(&mut self) {
@@ -297,7 +313,8 @@ impl WindowContext {
         });
 
         let virtual_framebuffer_id = task_graph.add_framebuffer();
-        let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(self.viewport.clone()));
+        let virtual_depthbuffer_id =
+            task_graph.add_image(&get_depthimage_createinfo(self.viewport.clone()));
 
         self.scene_task.shader = self
             .meshes
@@ -341,8 +358,8 @@ impl WindowContext {
 
         let mut task_graph = unsafe {
             task_graph.compile(&CompileInfo {
-                queues: &[&self.queues[0]],
-                present_queue: Some(&self.queues[0]),
+                queues: &[&self.queue],
+                present_queue: Some(&self.queue),
                 flight_id: self.flight_id,
                 ..Default::default()
             })
@@ -356,7 +373,7 @@ impl WindowContext {
             .downcast_mut::<SceneTask>()
             .unwrap()
             .create_pipeline(
-                self.queues[0].device().clone(),
+                self.queue.device().clone(),
                 subpass,
                 self.viewport.clone(),
             );
@@ -377,7 +394,7 @@ impl WindowContext {
     pub fn recreate_buffers(&mut self) {
         (self.scene_task, self.vertex_buffer_id, self.index_buffer_id) = create_buffers(
             self.resources.clone(),
-            self.queues.clone(),
+            self.queue.clone(),
             self.flight_id,
             self.meshes.clone(),
         );
@@ -405,19 +422,18 @@ fn get_depthimage_createinfo(viewport: Viewport) -> ImageCreateInfo {
     }
 }
 
+// Create buffers on device and push meshes to device memory
 fn create_buffers(
     resources: Arc<Resources>,
-    queues: Vec<Arc<Queue>>,
+    queue: Arc<Queue>,
     flight_id: Id<Flight>,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
 ) -> (SceneTask, Id<Buffer>, Id<Buffer>) {
     let scene_task = SceneTask::new(
         &meshes,
         resources.clone(),
-        queues.clone(),
+        queue,
         flight_id,
-        None,
-        None,
     );
 
     let vertex_buffer_id = scene_task.vertex_buffer_id;
@@ -429,7 +445,7 @@ fn create_buffers(
 fn create_taskgraph(
     resources: Arc<Resources>,
     swapchain_format: Format,
-    queues: Vec<Arc<Queue>>,
+    queue: Arc<Queue>,
     flight_id: Id<Flight>,
     viewport: Viewport,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
@@ -453,9 +469,11 @@ fn create_taskgraph(
     let virtual_framebuffer_id = task_graph.add_framebuffer();
     let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(viewport.clone()));
 
+    // Send meshes to device and get back buffer IDs
     let (scene_task, vertex_buffer_id, index_buffer_id) =
-        create_buffers(resources, queues.clone(), flight_id, meshes);
+        create_buffers(resources, queue.clone(), flight_id, meshes);
 
+    // Assemble our scene
     let scene_node_id = task_graph
         .create_task_node(
             "Scene",
@@ -488,8 +506,8 @@ fn create_taskgraph(
 
     let mut task_graph = unsafe {
         task_graph.compile(&CompileInfo {
-            queues: &[&queues[0]],
-            present_queue: Some(&queues[0]),
+            queues: &[&queue],
+            present_queue: Some(&queue),
             flight_id,
             ..Default::default()
         })
@@ -502,7 +520,7 @@ fn create_taskgraph(
         .task_mut()
         .downcast_mut::<SceneTask>()
         .unwrap()
-        .create_pipeline(queues[0].device().clone(), subpass, viewport.clone());
+        .create_pipeline(queue.device().clone(), subpass, viewport.clone());
 
     (
         task_graph,

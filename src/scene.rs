@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
@@ -23,7 +24,6 @@ use vulkano::{
     render_pass::Subpass,
     shader::ShaderStage,
 };
-use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano_taskgraph::{
     ClearValues, Id, Task, TaskContext, TaskResult,
     command_buffer::RecordingCommandBuffer,
@@ -46,26 +46,20 @@ pub struct SceneTask {
 }
 
 impl SceneTask {
+    // Initializes scene
+    // Creates vertex and index buffers and pushes data to them
     pub fn new(
         meshes: &Vec<Arc<Mutex<Mesh3D>>>,
         resources: Arc<Resources>,
-        queues: Vec<Arc<Queue>>,
+        queue: Arc<Queue>,
         flight_id: Id<Flight>,
-        vertex_buffer_id: Option<Id<Buffer>>,
-        index_buffer_id: Option<Id<Buffer>>,
     ) -> Self {
-
-        if vertex_buffer_id.is_some() {
-            unsafe { resources.remove_buffer(vertex_buffer_id.unwrap()).unwrap() };
-        }
-
-        if index_buffer_id.is_some() {
-            unsafe { resources.remove_buffer(index_buffer_id.unwrap()).unwrap() };
-        }
-
         let mut vertices: Vec<Vertex3D> = vec![];
         let mut indices: Vec<u32> = vec![];
         let mut shader: Option<Shader> = None;
+
+        // Put all meshes into one vertex/index buffer
+        // Shader is assumed to be the same on all meshes, just use the last one
         for mesh_mutex in meshes {
             let mesh = mesh_mutex.lock().unwrap();
             let offset_indices = mesh
@@ -77,40 +71,46 @@ impl SceneTask {
 
             vertices = combine_vec(vec![vertices, mesh.vertices.clone()]);
             indices = combine_vec(vec![indices, offset_indices]);
-            shader = Some(mesh.shader.clone());
+            shader = Some(mesh.shader.clone()); // yes this is inefficient
         }
 
         let shader = shader.expect("No meshes when creating new Scene Task!");
 
-        let vertex_buffer_id = resources.create_buffer(
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            DeviceLayout::for_value(vertices.as_slice()).unwrap(),
-        ).unwrap();
+        // Create buffers on device
+        let vertex_buffer_id = resources
+            .create_buffer(
+                BufferCreateInfo {
+                    usage: BufferUsage::VERTEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::for_value(vertices.as_slice()).unwrap(),
+            )
+            .unwrap();
 
-        let index_buffer_id = resources.create_buffer(
-            BufferCreateInfo {
-                usage: BufferUsage::INDEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            DeviceLayout::for_value(indices.as_slice()).unwrap(),
-        ).unwrap();
+        let index_buffer_id = resources
+            .create_buffer(
+                BufferCreateInfo {
+                    usage: BufferUsage::INDEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::for_value(indices.as_slice()).unwrap(),
+            )
+            .unwrap();
 
+        // Write buffers to device
         unsafe {
             vulkano_taskgraph::execute(
-                &queues[0],
+                &queue,
                 &resources,
                 flight_id,
                 |_cbf, tcx| {
@@ -180,9 +180,9 @@ impl SceneTask {
                 depth_stencil_state: Some(DepthStencilState {
                     depth: Some(DepthState {
                         write_enable: true,
-                        compare_op: CompareOp::Greater,
+                        compare_op: CompareOp::Greater, // Depth buffer is reversed
                     }),
-                        ..Default::default()
+                    ..Default::default()
                 }),
                 ..GraphicsPipelineCreateInfo::layout(self.shader.pipeline_layout.clone().unwrap())
             },
@@ -196,9 +196,9 @@ impl SceneTask {
 impl Task for SceneTask {
     type World = WindowContext;
 
-    fn clear_values(&self, _clear_values: &mut ClearValues<'_>) {
-        //clear_values.set(self.image_id, [0.0; 4]);
-    }
+    // This is run every frame for our scene
+    // The framebuffer is already cleared when it's attached to our scene node, so this doesn't need to do anything
+    fn clear_values(&self, _clear_values: &mut ClearValues<'_>) { }
 
     unsafe fn execute(
         &self,
@@ -209,6 +209,8 @@ impl Task for SceneTask {
         let binding = self.shader.pipeline_layout.clone().unwrap();
         let layout = binding.as_ref();
 
+        // Convert our DescriptorSetWithOffsets to a raw descriptor set
+        // This doesn't feel safe
         let binding = self.shader.descriptor_sets.get(&0).unwrap().clone();
         let raw_descriptor_set = binding.as_ref().0.as_raw();
 
@@ -234,9 +236,8 @@ impl Task for SceneTask {
                     .expect("Attempted to bind pipeline but there's no pipeline!"),
             )?;
 
+            // Draw the entire index buffer
             cbf.draw_indexed(self.index_count as u32, 1, 0, 0, 0)?;
-
-            cbf.destroy_object(binding.as_ref().0.clone());
         }
 
         Ok(())

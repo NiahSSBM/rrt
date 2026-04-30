@@ -61,6 +61,7 @@ pub fn game_main(data: GameData) {
         Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     );
 
+    // Assemble verticies into models
     for model in models {
         let tri_shaders = Shader::new(stage_pipeline.clone(), vec![perspective.clone()]);
         let mut model_verts: Vec<Vertex3D> = vec![];
@@ -86,6 +87,7 @@ pub fn game_main(data: GameData) {
         meshes.push(mesh);
     }
 
+    // Send each mesh to be added to the vertex buffer
     for mesh in &meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))

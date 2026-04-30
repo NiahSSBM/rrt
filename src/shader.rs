@@ -19,10 +19,7 @@ use vulkano::{
         },
     },
     device::{Device, Queue},
-    memory::allocator::{
-        AllocationCreateInfo, DeviceLayout,
-        MemoryTypeFilter,
-    },
+    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::PipelineLayout,
     shader::{EntryPoint, ShaderStage, ShaderStages},
 };
@@ -30,7 +27,6 @@ use vulkano_taskgraph::{
     Id,
     resource::{Flight, HostAccessType, Resources},
 };
-
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -111,10 +107,7 @@ pub struct Shader {
     pub pipeline_layout: Option<Arc<PipelineLayout>>,
     pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
     pub additional_properties: Vec<AdditionalShaderProperties>,
-    //host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    //device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
-    //command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     resources: Option<Arc<Resources>>,
 }
 
@@ -151,10 +144,14 @@ fn get_shader_property(
             return Some(potential);
         }
     }
-    return None;
+    None
 }
 
 impl Shader {
+    // Calling new() is NOT enough to call load(), you must call build() after calling new()
+    // This is so new() can be called from the game thread with no knowledge of the graphics device
+    // The game thread will then signal the render thread to call build()
+    //
     // TODO: Verify requested stages are compatible with each other
     // eg: no duplicates and vertex stage is present
     pub fn new(
@@ -170,17 +167,7 @@ impl Shader {
             pipeline_layout: None,
             descriptor_sets: BTreeMap::new(),
             additional_properties,
-            //host_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
-            //    queue.device().clone(),
-            //)),
-            //device_buffer_allocator: Arc::new(GenericMemoryAllocator::new_default(
-            //    queue.device().clone(),
-            //)),
             descriptor_set_allocator: None,
-            //command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
-            //    queue.device().clone(),
-            //    Default::default(),
-            //)),
             resources: None,
         }
     }
@@ -197,7 +184,11 @@ impl Shader {
     }
 
     pub fn rebuild(&mut self, flight_id: Id<Flight>) {
-        self.build(self.queue.clone().unwrap(), self.resources.clone().unwrap(), flight_id);
+        self.build(
+            self.queue.clone().unwrap(),
+            self.resources.clone().unwrap(),
+            flight_id,
+        );
     }
 
     // This is where the data inputs for each shader are defined
@@ -209,7 +200,7 @@ impl Shader {
     fn load(&mut self, flight_id: Id<Flight>) {
         if self.queue.is_none() || self.resources.is_none() {
             println!("WARNING: Queue or Resources are not initialized while loading shader.");
-            return
+            return;
         }
         let queue = self.queue.clone().unwrap();
         let device = self.queue.clone().unwrap().device().clone();
@@ -280,7 +271,7 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     1,
-                    pad(bytes_of(&fs_default::colorOffset { offset: -0.5 })),
+                    pad(bytes_of::<[u8; 0]>(&[])),
                 ),
                 ShaderType::FragmentCustom => (
                     fs_wireframe::load(device.clone())
@@ -344,9 +335,6 @@ impl Shader {
 
         let (pipeline_layout, descriptor_sets) = push_descriptor_set(
             descriptor_layouts_with_data,
-            //self.host_buffer_allocator.clone(),
-            //self.device_buffer_allocator.clone(),
-            //self.command_buffer_allocator.clone(),
             self.descriptor_set_allocator.clone().unwrap(),
             queue.clone(),
             resources,
@@ -360,7 +348,6 @@ impl Shader {
     // This is for updating the perspective matrix
     pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
         self.additional_properties = vec![shader_property];
-        //self.load();
     }
 }
 
@@ -402,13 +389,11 @@ fn create_descriptor_set_layout(
 // We need:
 // - A descriptor set layout. create_descriptor_set_layout() does this
 // - The data to get sent to the GPU
-// - A few memory allocators
+// - A memory allocators
 // - A device queue
+// - A flight ID
 fn push_descriptor_set(
     descriptor_set_with_data: VGFXDescriptorSetLayoutWithData,
-    //host_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    //device_buffer_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    //command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     queue: Arc<Queue>,
     resources: Arc<Resources>,
@@ -420,51 +405,8 @@ fn push_descriptor_set(
     descriptor_set_layouts.push(descriptor_set_with_data.layout.clone());
 
     // We need to store each binding in their own buffers as they get pushed to the GPU seperately
-    //let mut host_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
-    //let mut device_buffers: BTreeMap<u32, Subbuffer<[u8; 1024]>> = BTreeMap::new();
-    let _device_buffers: BTreeMap<u32, Id<Buffer>> = BTreeMap::new();
-
     let mut descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets> = BTreeMap::new();
     let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::new();
-
-    /*
-    // Match each descriptor set layout binding with the data we have for each binding =
-    for (binding, _) in descriptor_set_with_data.layout.bindings() {
-        // Create a host visible buffer with the data we have for this binding
-        let host_buffer: Subbuffer<[u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> = Buffer::from_data(
-            host_buffer_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            *descriptor_set_with_data.data.get(binding).unwrap(),
-        )
-        .unwrap();
-
-        // Create a device visible buffer with capacity for our max buffer size
-        let device_buffer: Subbuffer<[u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> = Buffer::new_sized(
-            device_buffer_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        descriptor_writes.push(WriteDescriptorSet::buffer(*binding, device_buffer.clone()));
-
-        host_buffers.insert(*binding, host_buffer);
-        device_buffers.insert(*binding, device_buffer);
-    } */
 
     // Create a pipeline to copy our data from the host to the device
     let pipeline_layout = vulkano::pipeline::PipelineLayout::new(
@@ -479,6 +421,7 @@ fn push_descriptor_set(
     .unwrap();
 
     for (binding, _) in descriptor_set_with_data.layout.bindings() {
+        // Create a buffer for each binding
         let device_buffer = resources
             .create_buffer(
                 BufferCreateInfo {
@@ -495,14 +438,16 @@ fn push_descriptor_set(
             )
             .unwrap();
 
-        //device_buffers.insert(*binding, device_buffer);
+        // Note our write to this buffer
         descriptor_writes.push(WriteDescriptorSet::buffer(
             *binding,
             Subbuffer::new(resources.buffer(device_buffer).unwrap().buffer().clone()),
         ));
 
+        // Wait for GPU to finish flight
         resources.flight(flight_id).unwrap().wait(None).unwrap();
 
+        // Write buffer to GPU
         unsafe {
             vulkano_taskgraph::execute(
                 &queue,
@@ -523,6 +468,7 @@ fn push_descriptor_set(
         .unwrap();
     }
 
+    // Construct a descriptor set from our device buffer
     let descriptor_set = DescriptorSet::new_variable(
         descriptor_set_allocator.clone(),
         descriptor_set_with_data.clone().layout,
@@ -536,41 +482,6 @@ fn push_descriptor_set(
     .unwrap();
 
     descriptor_sets.insert(0, DescriptorSetWithOffsets::new(descriptor_set.clone(), []));
-
-
-    // Setup a one-time command buffer to send our host buffer to the device buffer
-    //let mut cbb = AutoCommandBufferBuilder::primary(
-    //    command_buffer_allocator,
-    //    queue.queue_family_index(),
-    //    vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
-    //)
-    //.unwrap();
-    //
-    //// Copy buffer for each binding
-    //for (binding, host_buffer) in host_buffers {
-    //    cbb.copy_buffer(vulkano::command_buffer::CopyBufferInfo::buffers(
-    //        host_buffer,
-    //        device_buffers.get(&binding).unwrap().clone(),
-    //    ))
-    //    .unwrap();
-    //    cbb.bind_descriptor_sets(
-    //        vulkano::pipeline::PipelineBindPoint::Graphics,
-    //        pipeline_layout.clone(),
-    //        0,
-    //        DescriptorSetWithOffsets::new(descriptor_set.clone(), []),
-    //    )
-    //    .unwrap();
-    //}
-    //
-    //let cb = cbb.build().unwrap();
-
-    // Command buffer finished, execute
-    //cb.execute(queue.clone())
-    //    .unwrap()
-    //    .then_signal_fence_and_flush()
-    //    .unwrap()
-    //    .wait(None)
-    //    .unwrap();
 
     (pipeline_layout, descriptor_sets)
 }
