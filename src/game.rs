@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::ops::Add;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use color::AlphaColor;
 use color::palette::css;
@@ -21,6 +20,8 @@ use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 use crate::shader::Vertex3D;
+
+const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
@@ -51,6 +52,8 @@ struct Camera {
 struct GameState {
     camera: Camera,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    last_physics_update: Instant,
+    delta: Duration,
     view_offset: f32,
 }
 
@@ -59,6 +62,8 @@ impl GameState {
         Self {
             camera: Camera::new(),
             meshes: Vec::new(),
+            last_physics_update: Instant::now(),
+            delta: Duration::ZERO,
             view_offset: 0.0,
         }
     }
@@ -137,11 +142,19 @@ fn game_init(data: &GameData, state: &mut GameState) {
 }
 
 fn update(data: &GameData, state: &mut GameState) -> GameStatus {
+    GameStatus::Ok
+}
+
+fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     state.view_offset += 0.05;
     state.camera.perspective = [
         Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
         Matrix4::look_at_rh(
-            &Point3::new(3.0 * state.view_offset.sin(), state.view_offset.cos() * 3.0, 2.0), // Where the camera is
+            &Point3::new(
+                3.0 * state.view_offset.sin(),
+                state.view_offset.cos() * 3.0,
+                2.0,
+            ), // Where the camera is
             &Point3::new(0.0, 0.0, 1.0),   // Where the camera looks
             &Vector3::new(0.0, 0.0, -1.0), // What axis is up
         )
@@ -160,13 +173,11 @@ fn update(data: &GameData, state: &mut GameState) -> GameStatus {
             ));
     }
 
-    thread::sleep(Duration::from_millis(16));
-
     match data.from_render.try_recv() {
         Ok(event) => match event {
             GameEvent::GameClose => {
                 println!("Game thread exiting...");
-                return GameStatus::Exit
+                return GameStatus::Exit;
             }
         },
         Err(_) => {}
@@ -181,8 +192,6 @@ fn update(data: &GameData, state: &mut GameState) -> GameStatus {
 
     GameStatus::Ok
 }
-
-fn physics_update() {}
 
 fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     let mut loaded_models: Vec<IndexedMesh> = Vec::new();
@@ -219,12 +228,25 @@ fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
 pub fn game_main(data: GameData) {
     let mut state = GameState::new();
     game_init(&data, &mut state);
-    
+
     // Main loop
     loop {
+        state.delta = state.last_physics_update.elapsed();
+        // Run physics update if it's been long enough
+        if state.delta
+            >= Duration::from_secs_f32(1.0 / PHYSICS_UPDATES_PER_SECOND)
+        {
+            let status = physics_update(&data, &mut state);
+            if status == GameStatus::Exit {
+                break;
+            }
+            state.last_physics_update = Instant::now();
+        }
+
+        // Run normal update as quick as possible
         let status = update(&data, &mut state);
         if status == GameStatus::Exit {
-            break
+            break;
         }
     }
 }
