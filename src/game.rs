@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -14,7 +15,6 @@ use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
 use vulkano::shader::ShaderStage;
-use vulkano_taskgraph::resource::Resources;
 
 use crate::mesh::Mesh3D;
 use crate::shader::AdditionalShaderProperties;
@@ -33,12 +33,55 @@ pub enum GameEvent {
     GameClose,
 }
 
+#[derive(PartialEq)]
+enum GameStatus {
+    Ok,
+    Exit,
+}
+
 pub struct GameData {
     pub to_render: mpsc::Sender<RenderEvent>,
     pub from_render: mpsc::Receiver<GameEvent>,
 }
 
-pub fn game_main(data: GameData) {
+struct Camera {
+    perspective: [[[f32; 4]; 4]; 3],
+}
+
+struct GameState {
+    camera: Camera,
+    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    view_offset: f32,
+}
+
+impl GameState {
+    fn new() -> Self {
+        Self {
+            camera: Camera::new(),
+            meshes: Vec::new(),
+            view_offset: 0.0,
+        }
+    }
+}
+
+impl Camera {
+    fn new() -> Self {
+        Self {
+            perspective: [
+                Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
+                Matrix4::look_at_rh(
+                    &Point3::new(4.0, 0.0, 0.0),  // Where the camera is
+                    &Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
+                    &Vector3::new(0.0, 1.0, 0.0), // What axis is up
+                )
+                .into(),
+                Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+            ],
+        }
+    }
+}
+
+fn game_init(data: &GameData, state: &mut GameState) {
     // Load shaders
     let stage_pipeline = HashMap::from([
         (ShaderStage::Vertex, ShaderType::VertexDefault),
@@ -49,21 +92,16 @@ pub fn game_main(data: GameData) {
     let model_paths = vec!["models/horse.stl"];
     let models = load_stls(model_paths);
 
-    let mut meshes = vec![];
-    let mut perspective = AdditionalShaderProperties::Perspective(
-        Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
-        Matrix4::look_at_rh(
-            &Point3::new(4.0, 0.0, 0.0),  // Where the camera is
-            &Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
-            &Vector3::new(0.0, 1.0, 0.0), // What axis is up
-        )
-        .into(),
-        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
-    );
-
     // Assemble verticies into models
     for model in models {
-        let tri_shaders = Shader::new(stage_pipeline.clone(), vec![perspective.clone()]);
+        let tri_shaders = Shader::new(
+            stage_pipeline.clone(),
+            vec![AdditionalShaderProperties::Perspective(
+                state.camera.perspective[0],
+                state.camera.perspective[1],
+                state.camera.perspective[2],
+            )],
+        );
         let mut model_verts: Vec<Vertex3D> = vec![];
         let mut model_indicies: Vec<usize> = vec![];
 
@@ -84,11 +122,11 @@ pub fn game_main(data: GameData) {
             model_indicies.iter().map(|i| i.clone() as u32).collect(),
             tri_shaders,
         )));
-        meshes.push(mesh);
+        state.meshes.push(mesh);
     }
 
     // Send each mesh to be added to the vertex buffer
-    for mesh in &meshes {
+    for mesh in &state.meshes {
         data.to_render
             .send(RenderEvent::AddMesh(mesh.clone()))
             .expect("Failed to send mesh data to render thread!");
@@ -96,49 +134,55 @@ pub fn game_main(data: GameData) {
             .send(RenderEvent::UpdateVertexBuffer)
             .expect("Failed to request vertex buffer update!");
     }
-
-    let mut view_offset: f32 = 0.0;
-    loop {
-        //vert_offsets += 0.01;
-        view_offset += 0.05;
-        perspective = AdditionalShaderProperties::Perspective(
-            Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
-            Matrix4::look_at_rh(
-                &Point3::new(3.0 * view_offset.sin(), view_offset.cos() * 3.0, 2.0), // Where the camera is
-                &Point3::new(0.0, 0.0, 1.0),   // Where the camera looks
-                &Vector3::new(0.0, 0.0, -1.0), // What axis is up
-            )
-            .into(),
-            Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
-        );
-
-        for mesh in meshes.clone() {
-            mesh.lock()
-                .unwrap()
-                .shader
-                .update_descriptor(perspective.clone());
-        }
-
-        thread::sleep(Duration::from_millis(16));
-
-        match data.from_render.try_recv() {
-            Ok(event) => match event {
-                GameEvent::GameClose => {
-                    println!("Game thread exiting...");
-                    break;
-                }
-            },
-            Err(_) => {}
-        }
-
-        data.to_render
-            .send(RenderEvent::UpdateShader)
-            .expect("Failed to request shader update!");
-        data.to_render
-            .send(RenderEvent::UpdateTaskGraph)
-            .expect("Failed to request task graph update!");
-    }
 }
+
+fn update(data: &GameData, state: &mut GameState) -> GameStatus {
+    state.view_offset += 0.05;
+    state.camera.perspective = [
+        Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
+        Matrix4::look_at_rh(
+            &Point3::new(3.0 * state.view_offset.sin(), state.view_offset.cos() * 3.0, 2.0), // Where the camera is
+            &Point3::new(0.0, 0.0, 1.0),   // Where the camera looks
+            &Vector3::new(0.0, 0.0, -1.0), // What axis is up
+        )
+        .into(),
+        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+    ];
+
+    for mesh in state.meshes.clone() {
+        mesh.lock()
+            .unwrap()
+            .shader
+            .update_descriptor(AdditionalShaderProperties::Perspective(
+                state.camera.perspective[0],
+                state.camera.perspective[1],
+                state.camera.perspective[2],
+            ));
+    }
+
+    thread::sleep(Duration::from_millis(16));
+
+    match data.from_render.try_recv() {
+        Ok(event) => match event {
+            GameEvent::GameClose => {
+                println!("Game thread exiting...");
+                return GameStatus::Exit
+            }
+        },
+        Err(_) => {}
+    }
+
+    data.to_render
+        .send(RenderEvent::UpdateShader)
+        .expect("Failed to request shader update!");
+    data.to_render
+        .send(RenderEvent::UpdateTaskGraph)
+        .expect("Failed to request task graph update!");
+
+    GameStatus::Ok
+}
+
+fn physics_update() {}
 
 fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     let mut loaded_models: Vec<IndexedMesh> = Vec::new();
@@ -170,4 +214,17 @@ fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     }
 
     loaded_models
+}
+
+pub fn game_main(data: GameData) {
+    let mut state = GameState::new();
+    game_init(&data, &mut state);
+    
+    // Main loop
+    loop {
+        let status = update(&data, &mut state);
+        if status == GameStatus::Exit {
+            break
+        }
+    }
 }
