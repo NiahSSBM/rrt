@@ -28,6 +28,7 @@ use vulkano_taskgraph::resource::{
     AccessTypes, Flight, ImageLayoutType, Resources, ResourcesCreateInfo,
 };
 use vulkano_taskgraph::{Id, resource_map};
+use winit::dpi::PhysicalPosition;
 use winit::event_loop::ActiveEventLoop;
 use winit::platform::wayland::ActiveEventLoopExtWayland;
 use winit::window::Window;
@@ -73,6 +74,7 @@ pub struct WindowContext {
     pub viewport: Viewport,
     pub game_thread_receiver: Option<Receiver<RenderEvent>>,
     pub game_thread_sender: Option<Sender<GameEvent>>,
+    pub last_cursor_position: PhysicalPosition<f64>,
     pub platform: Platform,
 }
 
@@ -231,6 +233,7 @@ impl WindowContext {
             viewport,
             game_thread_receiver: None,
             game_thread_sender: None,
+            last_cursor_position: PhysicalPosition::default(),
         }
     }
 

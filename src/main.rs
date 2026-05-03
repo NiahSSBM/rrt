@@ -4,12 +4,17 @@ mod scene;
 pub mod shader;
 mod vgfx;
 
+use std::f64::consts::E;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread, usize};
 use vgfx::WindowContext;
+use winit::dpi::PhysicalPosition;
+use winit::event::DeviceEvent;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
+use winit::window::CursorGrabMode;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -17,7 +22,7 @@ use winit::{
     window::WindowId,
 };
 
-use crate::game::{GameData, RenderEvent};
+use crate::game::{GameData, GameEvent, RenderEvent};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -70,18 +75,13 @@ impl ApplicationHandler for App {
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("The close button was pressed; stopping");
-                        match window_context
+                        let _ = window_context
                             .game_thread_sender
                             .as_ref()
                             .unwrap()
                             .send(game::GameEvent::GameClose)
-                        {
-                            Ok(_) => (),
-                            Err(err) => println!(
-                                "Failed to send game close event to render thread, closing anyway... {:?}",
-                                err
-                            ),
-                        };
+                            .inspect_err(|e|println!(
+                                "Failed to send game close event to render thread, closing anyway... {:?}", e));
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
@@ -170,9 +170,68 @@ impl ApplicationHandler for App {
                     WindowEvent::Resized(_size) => {
                         window_context.requested_resize = true;
                     }
-                    _ => (), //println!("Event received: {:?}", event),
+                    WindowEvent::Focused(is_focused) => {
+                        if is_focused {
+                            window.set_cursor_visible(false);
+                            let _ = window
+                                .set_cursor_grab(CursorGrabMode::Confined)
+                                .inspect_err(|e| println!("Could not capture cursor: {e}"));
+                        } else {
+                            window.set_cursor_visible(true);
+                            let _ = window
+                                .set_cursor_grab(winit::window::CursorGrabMode::None)
+                                .inspect_err(|e| println!("Could not release cursor: {e}"));
+                        }
+                    }
+                    WindowEvent::KeyboardInput {
+                        device_id: _device_id,
+                        ref event,
+                        is_synthetic: _is_synthetic,
+                    } => {
+                        if event.physical_key == PhysicalKey::Code(KeyCode::Escape) {
+                            window.set_cursor_visible(true);
+                            let _ = window
+                                .set_cursor_grab(winit::window::CursorGrabMode::None)
+                                .inspect_err(|e| println!("Could not release cursor: {e}"));
+                        }
+                    }
+                    WindowEvent::CursorMoved {
+                        device_id: _device_id,
+                        position,
+                    } => {
+                        let cursor_delta = [
+                            window_context.last_cursor_position.x - position.x,
+                            window_context.last_cursor_position.y - position.y,
+                        ];
+
+                        window_context.last_cursor_position = position;
+                    }
+                    _ => (), //println!("Window event received: {:?}", event),
                 }
             }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                for window_context in &self.window_contexts {
+                    let _ = window_context
+                        .game_thread_sender
+                        .as_ref()
+                        .unwrap()
+                        .send(GameEvent::CursorMoved(delta))
+                        .inspect_err(|e| {
+                            println!("Failed to send cursor moved event to game thread: {:?}", e)
+                        });
+                }
+            }
+            _ => (), //println!("Device event received: {:?}", event),
         }
     }
 }
@@ -191,7 +250,7 @@ fn main() {
     // The window is handled by the main thread, which listens and handles events from the OS like redraw request
     // TODO: Find a better way to change whether we're using wayland or X11. Currently we just force either X11 or Wayland
     let event_loop = EventLoop::builder()
-        //.with_wayland()
+        .with_x11()
         .build()
         .unwrap_or_else(|err| panic!("Couldn't create window event loop: {:?}", err));
     event_loop.set_control_flow(ControlFlow::Poll);

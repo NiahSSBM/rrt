@@ -8,8 +8,13 @@ use std::time::Instant;
 
 use color::AlphaColor;
 use color::palette::css;
+use nalgebra::Matrix;
+use nalgebra::Matrix3;
 use nalgebra::Matrix4;
+use nalgebra::Point;
 use nalgebra::Point3;
+use nalgebra::Rotation3;
+use nalgebra::UnitQuaternion;
 use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
@@ -22,6 +27,7 @@ use crate::shader::ShaderType;
 use crate::shader::Vertex3D;
 
 const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
+const MOUSE_SENSITIVITY: f32 = 0.05;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
@@ -32,6 +38,7 @@ pub enum RenderEvent {
 
 pub enum GameEvent {
     GameClose,
+    CursorMoved((f64, f64)),
 }
 
 #[derive(PartialEq)]
@@ -47,6 +54,13 @@ pub struct GameData {
 
 struct Camera {
     perspective: [[[f32; 4]; 4]; 3],
+    position: Point3<f32>,
+    front: Vector3<f32>,
+    up: Vector3<f32>,
+    right: Vector3<f32>,
+    world_up: Vector3<f32>,
+    yaw: f32,
+    pitch: f32,
 }
 
 struct GameState {
@@ -54,7 +68,6 @@ struct GameState {
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
     last_physics_update: Instant,
     delta: Duration,
-    view_offset: f32,
 }
 
 impl GameState {
@@ -64,7 +77,6 @@ impl GameState {
             meshes: Vec::new(),
             last_physics_update: Instant::now(),
             delta: Duration::ZERO,
-            view_offset: 0.0,
         }
     }
 }
@@ -82,6 +94,13 @@ impl Camera {
                 .into(),
                 Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
             ],
+            position: Point3::origin(),
+            front: *Vector3::z_axis(),
+            up: *Vector3::y_axis(),
+            right: *Vector3::x_axis(),
+            world_up: *Vector3::y_axis(),
+            yaw: -90.0,
+            pitch: 0.0,
         }
     }
 }
@@ -141,24 +160,50 @@ fn game_init(data: &GameData, state: &mut GameState) {
     }
 }
 
+// Runs as quickly as possible
 fn update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
+// Runs 60 times per second
 fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
-    state.view_offset += 0.05;
+    let (mut x_delta, mut y_delta) = (0.0, 0.0);
+
+    let events = data.from_render.try_iter();
+    for event in events {
+        match event {
+            GameEvent::GameClose => {
+                println!("Game thread exiting...");
+                return GameStatus::Exit;
+            }
+            GameEvent::CursorMoved(cursor_delta) => {
+                x_delta += cursor_delta.0 as f32;
+                y_delta += cursor_delta.1 as f32;
+            }
+        }
+    }
+
+    state.camera.yaw += x_delta * MOUSE_SENSITIVITY;
+    state.camera.pitch += y_delta * MOUSE_SENSITIVITY;
+
+    state.camera.pitch = state.camera.pitch.clamp(-89.0, 89.0);
+
+    let new_front: Vector3<f32> = Vector3::new(
+        state.camera.yaw.to_radians().cos() * state.camera.pitch.to_radians().cos(),
+        state.camera.pitch.to_radians().sin(),
+        state.camera.yaw.to_radians().sin() * state.camera.pitch.to_radians().cos(),
+    )
+    .normalize();
+
+    state.camera.front = new_front;
+    state.camera.right = state.camera.front.cross(&state.camera.world_up).normalize();
+    state.camera.up = state.camera.right.cross(&state.camera.front).normalize();
+
+    let model: Matrix4<f32> = Matrix4::from_axis_angle(&Vector3::z_axis(), -1.0);
+
     state.camera.perspective = [
-        Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
-        Matrix4::look_at_rh(
-            &Point3::new(
-                3.0 * state.view_offset.sin(),
-                state.view_offset.cos() * 3.0,
-                2.0,
-            ), // Where the camera is
-            &Point3::new(0.0, 0.0, 1.0),   // Where the camera looks
-            &Vector3::new(0.0, 0.0, -1.0), // What axis is up
-        )
-        .into(),
+        model.into(),
+        Rotation3::look_at_rh(&state.camera.front, &state.camera.up).to_homogeneous().into(),
         Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     ];
 
@@ -171,16 +216,6 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
                 state.camera.perspective[1],
                 state.camera.perspective[2],
             ));
-    }
-
-    match data.from_render.try_recv() {
-        Ok(event) => match event {
-            GameEvent::GameClose => {
-                println!("Game thread exiting...");
-                return GameStatus::Exit;
-            }
-        },
-        Err(_) => {}
     }
 
     data.to_render
@@ -233,9 +268,7 @@ pub fn game_main(data: GameData) {
     loop {
         state.delta = state.last_physics_update.elapsed();
         // Run physics update if it's been long enough
-        if state.delta
-            >= Duration::from_secs_f32(1.0 / PHYSICS_UPDATES_PER_SECOND)
-        {
+        if state.delta >= Duration::from_secs_f32(1.0 / PHYSICS_UPDATES_PER_SECOND) {
             let status = physics_update(&data, &mut state);
             if status == GameStatus::Exit {
                 break;
