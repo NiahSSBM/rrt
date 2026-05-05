@@ -8,17 +8,16 @@ use std::time::Instant;
 
 use color::AlphaColor;
 use color::palette::css;
-use nalgebra::Matrix;
-use nalgebra::Matrix3;
 use nalgebra::Matrix4;
-use nalgebra::Point;
 use nalgebra::Point3;
 use nalgebra::Rotation3;
-use nalgebra::UnitQuaternion;
 use nalgebra::Vector3;
 use rand::TryRngCore;
 use stl_io::IndexedMesh;
 use vulkano::shader::ShaderStage;
+use winit::event::KeyEvent;
+use winit::keyboard::KeyCode;
+use winit::keyboard::PhysicalKey;
 
 use crate::mesh::Mesh3D;
 use crate::shader::AdditionalShaderProperties;
@@ -28,6 +27,7 @@ use crate::shader::Vertex3D;
 
 const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
 const MOUSE_SENSITIVITY: f32 = 0.05;
+const MOVE_SPEED: f32 = 0.05;
 
 pub enum RenderEvent {
     AddMesh(Arc<Mutex<Mesh3D>>),
@@ -39,6 +39,7 @@ pub enum RenderEvent {
 pub enum GameEvent {
     GameClose,
     CursorMoved((f64, f64)),
+    KeyEvent(KeyEvent),
 }
 
 #[derive(PartialEq)]
@@ -68,6 +69,7 @@ struct GameState {
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
     last_physics_update: Instant,
     delta: Duration,
+    keys_held: Vec<KeyCode>,
 }
 
 impl GameState {
@@ -77,6 +79,7 @@ impl GameState {
             meshes: Vec::new(),
             last_physics_update: Instant::now(),
             delta: Duration::ZERO,
+            keys_held: Vec::new(),
         }
     }
 }
@@ -180,6 +183,26 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
                 x_delta += cursor_delta.0 as f32;
                 y_delta += cursor_delta.1 as f32;
             }
+            GameEvent::KeyEvent(event) => {
+                if event.state.is_pressed() && !event.repeat {
+                    match event.physical_key {
+                        PhysicalKey::Code(key_code) => state.keys_held.push(key_code),
+                        PhysicalKey::Unidentified(_) => (),
+                    }
+                } else if !event.repeat {
+                    match event.physical_key {
+                        PhysicalKey::Code(key_code) => {
+                            match state.keys_held.iter().position(|k| key_code == *k) {
+                                Some(i) => {
+                                    state.keys_held.remove(i);
+                                }
+                                None => println!("Key released but was not pressed!"),
+                            }
+                        }
+                        PhysicalKey::Unidentified(_) => (),
+                    }
+                }
+            }
         }
     }
 
@@ -199,12 +222,38 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     state.camera.right = state.camera.front.cross(&state.camera.world_up).normalize();
     state.camera.up = state.camera.right.cross(&state.camera.front).normalize();
 
-    let model: Matrix4<f32> = Matrix4::from_axis_angle(&Vector3::z_axis(), -1.0);
+    for key in &state.keys_held {
+        if *key == KeyCode::KeyW {
+            state.camera.position += state.camera.front * MOVE_SPEED
+        } else if *key == KeyCode::KeyA {
+            state.camera.position += -state.camera.right * MOVE_SPEED;
+        } else if *key == KeyCode::KeyS {
+            state.camera.position += -state.camera.front * MOVE_SPEED;
+        } else if *key == KeyCode::KeyD {
+            state.camera.position += state.camera.right * MOVE_SPEED;
+        } else if *key == KeyCode::Space {
+            state.camera.position += -state.camera.up * MOVE_SPEED;
+        } else if *key == KeyCode::ShiftLeft {
+            state.camera.position += state.camera.up * MOVE_SPEED;
+        }
+    }
+
+    let mut model: Matrix4<f32> = Matrix4::identity();
+    model = model.prepend_translation(&Vector3::new(0.0, 1.0, -2.0));
+    model = model * Rotation3::from_axis_angle(&Vector3::x_axis(), std::f32::consts::PI / 2.0).to_homogeneous();
+    model = model * Rotation3::from_axis_angle(&Vector3::y_axis(), 0.0).to_homogeneous();
+    model = model * Rotation3::from_axis_angle(&Vector3::z_axis(), 0.0).to_homogeneous();
+    model = model.scale(1.0);
 
     state.camera.perspective = [
-        model.into(),
-        Rotation3::look_at_rh(&state.camera.front, &state.camera.up).to_homogeneous().into(),
-        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+        model.into(), // Model
+        Matrix4::look_at_rh(
+            &state.camera.position,
+            &(state.camera.position + state.camera.front),
+            &state.camera.up,
+        )
+        .into(), // View
+        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(), // Projection
     ];
 
     for mesh in state.meshes.clone() {

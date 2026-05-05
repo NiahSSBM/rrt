@@ -194,6 +194,17 @@ impl ApplicationHandler for App {
                                 .set_cursor_grab(winit::window::CursorGrabMode::None)
                                 .inspect_err(|e| println!("Could not release cursor: {e}"));
                         }
+                        let _ = window_context
+                            .game_thread_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(GameEvent::KeyEvent(event.clone()))
+                            .inspect_err(|e| {
+                                println!(
+                                    "Failed to send cursor moved event to game thread: {:?}",
+                                    e
+                                )
+                            });
                     }
                     WindowEvent::CursorMoved {
                         device_id: _device_id,
