@@ -1,8 +1,9 @@
 mod game;
 mod mesh;
 mod scene;
-pub mod shader;
+mod shader;
 mod vgfx;
+mod object;
 
 use std::f64::consts::E;
 use std::sync::{Mutex, mpsc};

@@ -20,6 +20,8 @@ use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 
 use crate::mesh::Mesh3D;
+use crate::object;
+use crate::object::Object;
 use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
@@ -66,7 +68,7 @@ struct Camera {
 
 struct GameState {
     camera: Camera,
-    meshes: Vec<Arc<Mutex<Mesh3D>>>,
+    objects: Vec<Object>,
     last_physics_update: Instant,
     delta: Duration,
     keys_held: Vec<KeyCode>,
@@ -76,7 +78,7 @@ impl GameState {
     fn new() -> Self {
         Self {
             camera: Camera::new(),
-            meshes: Vec::new(),
+            objects: Vec::new(),
             last_physics_update: Instant::now(),
             delta: Duration::ZERO,
             keys_held: Vec::new(),
@@ -149,17 +151,22 @@ fn game_init(data: &GameData, state: &mut GameState) {
             model_indicies.iter().map(|i| i.clone() as u32).collect(),
             tri_shaders,
         )));
-        state.meshes.push(mesh);
+        let object = Object::from_mesh(mesh);
+
+        state.objects.push(object);
     }
 
     // Send each mesh to be added to the vertex buffer
-    for mesh in &state.meshes {
-        data.to_render
-            .send(RenderEvent::AddMesh(mesh.clone()))
-            .expect("Failed to send mesh data to render thread!");
-        data.to_render
-            .send(RenderEvent::UpdateVertexBuffer)
-            .expect("Failed to request vertex buffer update!");
+    for object in &state.objects {
+        if object.mesh.is_some() {
+            // Skip empty objects
+            data.to_render
+                .send(RenderEvent::AddMesh(object.mesh.clone().unwrap())) // TODO: see if we can get around this clone
+                .expect("Failed to send mesh data to render thread!");
+            data.to_render
+                .send(RenderEvent::UpdateVertexBuffer)
+                .expect("Failed to request vertex buffer update!");
+        }
     }
 }
 
@@ -238,15 +245,21 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         }
     }
 
-    let mut model: Matrix4<f32> = Matrix4::identity();
-    model = model.prepend_translation(&Vector3::new(0.0, 1.0, -2.0));
-    model = model * Rotation3::from_axis_angle(&Vector3::x_axis(), std::f32::consts::PI / 2.0).to_homogeneous();
-    model = model * Rotation3::from_axis_angle(&Vector3::y_axis(), 0.0).to_homogeneous();
-    model = model * Rotation3::from_axis_angle(&Vector3::z_axis(), 0.0).to_homogeneous();
-    model = model.scale(1.0);
+    for object in &mut state.objects {
+        let mut model: Matrix4<f32> = Matrix4::identity();
+        model = model.prepend_translation(&Vector3::new(0.0, 1.0, -2.0));
+        model = model
+            * Rotation3::from_axis_angle(&Vector3::x_axis(), std::f32::consts::PI / 2.0)
+                .to_homogeneous();
+        model = model * Rotation3::from_axis_angle(&Vector3::y_axis(), 0.0).to_homogeneous();
+        model = model * Rotation3::from_axis_angle(&Vector3::z_axis(), 0.0).to_homogeneous();
+        model = model.scale(1.0);
+
+        object.transform = model.into();
+    }
 
     state.camera.perspective = [
-        model.into(), // Model
+        state.objects.get(0).unwrap().transform.into(), // Model
         Matrix4::look_at_rh(
             &state.camera.position,
             &(state.camera.position + state.camera.front),
@@ -256,15 +269,18 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(), // Projection
     ];
 
-    for mesh in state.meshes.clone() {
-        mesh.lock()
-            .unwrap()
-            .shader
-            .update_descriptor(AdditionalShaderProperties::Perspective(
-                state.camera.perspective[0],
-                state.camera.perspective[1],
-                state.camera.perspective[2],
-            ));
+    for object in &state.objects {
+        if object.mesh.is_some() {
+            // Skip empty objects
+            let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
+
+            mesh.shader
+                .update_descriptor(AdditionalShaderProperties::Perspective(
+                    state.camera.perspective[0],
+                    state.camera.perspective[1],
+                    state.camera.perspective[2],
+                ));
+        }
     }
 
     data.to_render
