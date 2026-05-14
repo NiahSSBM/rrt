@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::f32::consts::PI;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -10,6 +11,7 @@ use color::AlphaColor;
 use color::palette::css;
 use nalgebra::Matrix4;
 use nalgebra::Point3;
+use nalgebra::Rotation;
 use nalgebra::Rotation3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
@@ -118,10 +120,11 @@ fn game_init(data: &GameData, state: &mut GameState) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/horse.stl"];
+    let model_paths = vec!["models/horse.stl", "models/pig.stl"];
     let models = load_stls(model_paths);
 
     // Assemble verticies into models
+    let mut i = 0;
     for model in models {
         let tri_shaders = Shader::new(
             stage_pipeline.clone(),
@@ -151,9 +154,13 @@ fn game_init(data: &GameData, state: &mut GameState) {
             model_indicies.iter().map(|i| i.clone() as u32).collect(),
             tri_shaders,
         )));
-        let object = Object::from_mesh(mesh);
+        let mut object = Object::from_mesh(mesh);
+        object.translate(Vector3::new(0.0, 1.0 + (i as f32), -3.0));
+        object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
+        object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
         state.objects.push(object);
+        i += 8;
     }
 
     // Send each mesh to be added to the vertex buffer
@@ -246,39 +253,24 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     }
 
     for object in &mut state.objects {
-        let mut model: Matrix4<f32> = Matrix4::identity();
-        model = model.prepend_translation(&Vector3::new(0.0, 1.0, -2.0));
-        model = model
-            * Rotation3::from_axis_angle(&Vector3::x_axis(), std::f32::consts::PI / 2.0)
-                .to_homogeneous();
-        model = model * Rotation3::from_axis_angle(&Vector3::y_axis(), 0.0).to_homogeneous();
-        model = model * Rotation3::from_axis_angle(&Vector3::z_axis(), 0.0).to_homogeneous();
-        model = model.scale(1.0);
-
-        object.transform = model.into();
+        //object.translate(Vector3::new(0.0, 1.0, -2.0));
+        //object.rotate(Rotation3::new(Vector3::new(0.0, 0.0, 0.05)));
     }
-
-    state.camera.perspective = [
-        state.objects.get(0).unwrap().transform.into(), // Model
-        Matrix4::look_at_rh(
-            &state.camera.position,
-            &(state.camera.position + state.camera.front),
-            &state.camera.up,
-        )
-        .into(), // View
-        Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(), // Projection
-    ];
 
     for object in &state.objects {
         if object.mesh.is_some() {
             // Skip empty objects
             let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
-
             mesh.shader
                 .update_descriptor(AdditionalShaderProperties::Perspective(
-                    state.camera.perspective[0],
-                    state.camera.perspective[1],
-                    state.camera.perspective[2],
+                    object.transform.to_homogeneous().into(),
+                    Matrix4::look_at_rh(
+                        &state.camera.position,
+                        &(state.camera.position + state.camera.front),
+                        &state.camera.up,
+                    )
+                    .into(),
+                    Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
                 ));
         }
     }

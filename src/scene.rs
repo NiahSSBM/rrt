@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use vulkano::pipeline::graphics::depth_stencil::CompareOp;
+use vulkano::{descriptor_set, pipeline::graphics::depth_stencil::CompareOp};
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
