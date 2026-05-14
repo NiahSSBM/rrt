@@ -155,12 +155,12 @@ fn game_init(data: &GameData, state: &mut GameState) {
             tri_shaders,
         )));
         let mut object = Object::from_mesh(mesh);
-        object.translate(Vector3::new(0.0, 1.0 + (i as f32), -3.0));
+        object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
         state.objects.push(object);
-        i += 8;
+        i += 3;
     }
 
     // Send each mesh to be added to the vertex buffer

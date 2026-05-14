@@ -1,4 +1,4 @@
-use std::collections::TryReserveError;
+use std::collections::{BTreeMap, TryReserveError};
 
 use std::sync::{Arc, Mutex};
 
@@ -59,8 +59,7 @@ pub struct WindowContext {
     scene_task: SceneTask,
     pub resources: Arc<Resources>,
     pub flight_id: Id<Flight>,
-    vertex_buffer_id: Id<Buffer>,
-    index_buffer_id: Id<Buffer>,
+    buffers: BTreeMap<usize, (Id<Buffer>, Id<Buffer>)>,
     pub queue: Arc<Queue>,
     swapchain_id: Id<Swapchain>,
     depthbuffer_id: Id<Image>,
@@ -192,8 +191,7 @@ impl WindowContext {
             task_graph,
             scene_node_id,
             scene_task,
-            vertex_buffer_id,
-            index_buffer_id,
+            buffers,
             virtual_framebuffer_id,
             virtual_swapchain_id,
             virtual_depthbuffer_id,
@@ -218,8 +216,7 @@ impl WindowContext {
             scene_task,
             resources,
             flight_id,
-            vertex_buffer_id,
-            index_buffer_id,
+            buffers,
             queue,
             swapchain_id,
             depthbuffer_id,
@@ -319,15 +316,11 @@ impl WindowContext {
         let virtual_depthbuffer_id =
             task_graph.add_image(&get_depthimage_createinfo(self.viewport.clone()));
 
-        self.scene_task.shader = self
-            .meshes
-            .iter()
-            .next()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .shader
-            .clone();
+        let mut new_buffers = BTreeMap::new();
+        for (i, buffer) in &self.scene_task.buffers {
+            new_buffers.insert(*i, (self.meshes.get(*i).unwrap().lock().unwrap().shader.clone(), buffer.1, buffer.2));
+        }
+        self.scene_task.buffers = new_buffers;
 
         let scene_node_id = task_graph
             .create_task_node(
@@ -375,11 +368,7 @@ impl WindowContext {
             .task_mut()
             .downcast_mut::<SceneTask>()
             .unwrap()
-            .create_pipeline(
-                self.queue.device().clone(),
-                subpass,
-                self.viewport.clone(),
-            );
+            .create_pipelines(self.queue.device().clone(), subpass, self.viewport.clone());
 
         self.task_graph = task_graph;
         self.scene_node_id = scene_node_id;
@@ -395,7 +384,7 @@ impl WindowContext {
     }
 
     pub fn recreate_buffers(&mut self) {
-        (self.scene_task, self.vertex_buffer_id, self.index_buffer_id) = create_buffers(
+        (self.scene_task, self.buffers) = create_buffers(
             self.resources.clone(),
             self.queue.clone(),
             self.flight_id,
@@ -431,18 +420,15 @@ fn create_buffers(
     queue: Arc<Queue>,
     flight_id: Id<Flight>,
     meshes: Vec<Arc<Mutex<Mesh3D>>>,
-) -> (SceneTask, Id<Buffer>, Id<Buffer>) {
-    let scene_task = SceneTask::new(
-        &meshes,
-        resources.clone(),
-        queue,
-        flight_id,
-    );
+) -> (SceneTask, BTreeMap<usize, (Id<Buffer>, Id<Buffer>)>) {
+    let scene_task = SceneTask::new(&meshes, resources.clone(), queue, flight_id);
 
-    let vertex_buffer_id = scene_task.vertex_buffer_id;
-    let index_buffer_id = scene_task.index_buffer_id;
+    let mut buffers = BTreeMap::new();
+    for (i, buffer) in &scene_task.buffers {
+        buffers.insert(*i, (buffer.1, buffer.2));
+    }
 
-    (scene_task, vertex_buffer_id, index_buffer_id)
+    (scene_task, buffers)
 }
 
 fn create_taskgraph(
@@ -456,8 +442,7 @@ fn create_taskgraph(
     ExecutableTaskGraph<WindowContext>,
     NodeId,
     SceneTask,
-    Id<Buffer>,
-    Id<Buffer>,
+    BTreeMap<usize, (Id<Buffer>, Id<Buffer>)>,
     Id<Framebuffer>,
     Id<Swapchain>,
     Id<Image>,
@@ -473,7 +458,7 @@ fn create_taskgraph(
     let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(viewport.clone()));
 
     // Send meshes to device and get back buffer IDs
-    let (scene_task, vertex_buffer_id, index_buffer_id) =
+    let (scene_task, buffers) =
         create_buffers(resources, queue.clone(), flight_id, meshes);
 
     // Assemble our scene
@@ -523,14 +508,13 @@ fn create_taskgraph(
         .task_mut()
         .downcast_mut::<SceneTask>()
         .unwrap()
-        .create_pipeline(queue.device().clone(), subpass, viewport.clone());
+        .create_pipelines(queue.device().clone(), subpass, viewport.clone());
 
     (
         task_graph,
         scene_node_id,
         scene_task,
-        vertex_buffer_id,
-        index_buffer_id,
+        buffers,
         virtual_framebuffer_id,
         virtual_swapchain_id,
         virtual_depthbuffer_id,
