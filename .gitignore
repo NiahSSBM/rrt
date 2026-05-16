@@ -1,4 +1,5 @@
 /target
 .vscode/launch.json
-/models
+/models/*
+/textures/*
 profile.json.gz

@@ -159,6 +159,8 @@ fn game_init(data: &GameData, state: &mut GameState) {
         object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
+        object.load_image("textures/texture.jpg");
+
         state.objects.push(object);
         i += 3;
     }

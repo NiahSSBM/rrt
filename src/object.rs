@@ -1,11 +1,15 @@
+use core::str;
 use std::sync::{Arc, Mutex};
 
+use image::{ImageBuffer, Rgb, open};
 use nalgebra::{Matrix3, Point3, Rotation3, Transform3, Vector3};
+use vulkano::image::Image;
 
 use crate::mesh::Mesh3D;
 
 pub struct Object {
     pub mesh: Option<Arc<Mutex<Mesh3D>>>,
+    pub texture: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     pub transform: Transform3<f32>,
 }
 
@@ -13,6 +17,7 @@ impl Object {
     pub fn new() -> Self {
         Self {
             mesh: None,
+            texture: None,
             transform: Transform3::identity(),
         }
     }
@@ -20,8 +25,19 @@ impl Object {
     pub fn from_mesh(mesh: Arc<Mutex<Mesh3D>>) -> Self {
         Self {
             mesh: Some(mesh),
+            texture: None,
             transform: Transform3::identity(),
         }
+    }
+
+    pub fn load_image(&mut self, path: &str) {
+        self.texture = match open(path) {
+            Ok(i) => Some(i.to_rgb32f()),
+            Err(e) => {
+                println!("Could not load image: {:?}", e);
+                return;
+            }
+        };
     }
 
     pub fn translate(&mut self, vector: Vector3<f32>) {
