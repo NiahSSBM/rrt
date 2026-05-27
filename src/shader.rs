@@ -1,5 +1,6 @@
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
+use image::{ImageBuffer, Rgb, Rgba};
 use nalgebra::Matrix4;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -19,13 +20,23 @@ use vulkano::{
         },
     },
     device::{Device, Queue},
-    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
+    format::Format,
+    image::{
+        Image, ImageAspect, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage,
+        SampleCount,
+        sampler::{Sampler, SamplerCreateInfo},
+        view::ImageView,
+    },
+    memory::allocator::{
+        AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
+    },
     pipeline::PipelineLayout,
     shader::{EntryPoint, ShaderStage, ShaderStages},
+    sync::Sharing,
 };
 use vulkano_taskgraph::{
     Id,
-    resource::{Flight, HostAccessType, Resources},
+    resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
 
 // Size in bytes
@@ -41,6 +52,12 @@ pub enum ShaderType {
     FragmentDefault,
     FragmentCustom,
     FragmentWireframe,
+}
+
+#[derive(Clone)]
+enum DescriptorData {
+    Buffer([u8; STORAGE_BUFFER_BINDING_MAX_SIZE]),
+    Texture((Id<Image>, Arc<Sampler>, ImageBuffer<Rgba<u8>, Vec<u8>>)),
 }
 
 #[derive(Clone)]
@@ -109,6 +126,11 @@ pub struct Shader {
     pub additional_properties: Vec<AdditionalShaderProperties>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     resources: Option<Arc<Resources>>,
+    //texture_view: Option<Arc<ImageView>>,
+    sampler: Option<Arc<Sampler>>,
+    staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    raw_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    image: Option<Id<Image>>,
 }
 
 struct VGFXDescriptorSetLayout {
@@ -121,7 +143,7 @@ struct VGFXDescriptorSetLayout {
 #[derive(Clone)]
 struct VGFXDescriptorSetLayoutWithData {
     layout: Arc<DescriptorSetLayout>,
-    data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]>,
+    data: BTreeMap<u32, DescriptorData>,
 }
 
 // Takes an array of bytes and returns a sized array of max binding size
@@ -158,8 +180,6 @@ impl Shader {
         stage_pipeline: HashMap<ShaderStage, ShaderType>,
         additional_properties: Vec<AdditionalShaderProperties>,
     ) -> Self {
-        // Start with the values we have now
-        // TODO: Re-use these allocators so they don't get re-created every time we make a new shader
         Self {
             stage_pipeline,
             stage_entries: HashMap::new(),
@@ -169,7 +189,51 @@ impl Shader {
             additional_properties,
             descriptor_set_allocator: None,
             resources: None,
+            //texture_view: None,
+            sampler: None,
+            staged_texture: None,
+            raw_texture: None,
+            image: None,
         }
+    }
+
+    pub fn set_texture(&mut self, texture: ImageBuffer<Rgba<u8>, Vec<u8>>) {
+        self.staged_texture = Some(texture);
+    }
+
+    fn load_texture(&mut self, texture: ImageBuffer<Rgba<u8>, Vec<u8>>) {
+        // TODO: Don't recreate a memory allocator every time this is called
+        let image = Image::new(
+            Arc::new(StandardMemoryAllocator::new_default(
+                self.queue.clone().unwrap().device().clone(),
+            )),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: Format::R8G8B8A8_SRGB,
+                view_formats: vec![Format::R8G8B8A8_SRGB],
+                extent: [texture.width(), texture.height(), 1],
+                array_layers: 1,
+                mip_levels: 1,
+                samples: SampleCount::Sample1,
+                tiling: ImageTiling::Linear,
+                usage: ImageUsage::SAMPLED,
+                stencil_usage: None,
+                sharing: Sharing::Exclusive,
+                initial_layout: ImageLayout::Undefined,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .unwrap();
+
+        let sampler = Sampler::new(
+            self.queue.clone().unwrap().device().clone(),
+            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+        )
+        .unwrap();
+
+        self.sampler = Some(sampler);
+        self.image = Some(self.resources.clone().unwrap().add_image(image));
     }
 
     pub fn build(&mut self, queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) {
@@ -179,6 +243,15 @@ impl Shader {
             queue.device().clone(),
             Default::default(),
         )));
+
+        match self.staged_texture.clone() {
+            Some(t) => {
+                self.load_texture(t);
+                self.raw_texture = self.staged_texture.clone();
+                self.staged_texture = None;
+            }
+            None => {}
+        }
 
         self.load(flight_id);
     }
@@ -206,14 +279,13 @@ impl Shader {
         let device = self.queue.clone().unwrap().device().clone();
         let resources = self.resources.clone().unwrap();
 
-        let mut binding_data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]> =
-            BTreeMap::new();
+        let mut binding_data: BTreeMap<u32, DescriptorData> = BTreeMap::new();
         let mut stage_entries: HashMap<ShaderStage, EntryPoint> = HashMap::new();
 
         for (s_stage, s_type) in self.stage_pipeline.clone() {
             let entry: EntryPoint;
             let binding: u32;
-            let data: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE];
+            let data: DescriptorData;
 
             (entry, binding, data) = match s_type {
                 ShaderType::VertexDefault => {
@@ -228,7 +300,7 @@ impl Shader {
                             .entry_point("main")
                             .unwrap(),
                         0,
-                        pad(bytes_of(&vs_default::vInput {
+                        DescriptorData::Buffer(pad(bytes_of(&vs_default::vInput {
                             mvp: {
                                 match perspective {
                                     AdditionalShaderProperties::Perspective(model, view, proj) => {
@@ -240,7 +312,7 @@ impl Shader {
                                     }
                                 }
                             },
-                        })),
+                        }))),
                     )
                 }
                 ShaderType::VertexCustom => (
@@ -249,13 +321,13 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of(&vs_custom::vColor {
+                    DescriptorData::Buffer(pad(bytes_of(&vs_custom::vColor {
                         colors: [
                             [1.0, 0.0, 0.0, 1.0].into(),
                             [0.0, 1.0, 0.0, 1.0].into(),
                             [0.0, 0.0, 1.0, 1.0].into(),
                         ],
-                    })),
+                    }))),
                 ),
                 ShaderType::VertexWireframe => (
                     vs_wireframe::load(device.clone())
@@ -263,15 +335,22 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of::<[u8; 0]>(&[])),
+                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
                 ),
                 ShaderType::FragmentDefault => (
                     fs_default::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    1,
-                    pad(bytes_of::<[u8; 0]>(&[])),
+                    2,
+                    match self.image {
+                        Some(_) => DescriptorData::Texture((
+                            self.image.clone().unwrap(),
+                            self.sampler.clone().unwrap(),
+                            self.raw_texture.clone().unwrap(),
+                        )),
+                        None => DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
+                    },
                 ),
                 ShaderType::FragmentCustom => (
                     fs_wireframe::load(device.clone())
@@ -279,7 +358,7 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of::<[u8; 0]>(&[])),
+                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
                 ),
                 ShaderType::FragmentWireframe => (
                     fs_custom::load(device.clone())
@@ -287,7 +366,7 @@ impl Shader {
                         .entry_point("main")
                         .unwrap(),
                     0,
-                    pad(bytes_of::<[u8; 0]>(&[])),
+                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
                 ),
             };
 
@@ -308,18 +387,26 @@ impl Shader {
     fn load_internal(
         &self,
         queue: Arc<Queue>,
-        binding_data: BTreeMap<u32, [u8; STORAGE_BUFFER_BINDING_MAX_SIZE]>,
+        binding_data: BTreeMap<u32, DescriptorData>,
         resources: Arc<Resources>,
         flight_id: Id<Flight>,
     ) -> (BTreeMap<u32, DescriptorSetWithOffsets>, Arc<PipelineLayout>) {
         let mut descriptor_set_layout_create_info: BTreeMap<u32, VGFXDescriptorSetLayout> =
             BTreeMap::new();
-        for (binding, _) in &binding_data {
+
+        for (binding, data) in &binding_data {
             descriptor_set_layout_create_info.insert(
                 *binding,
-                VGFXDescriptorSetLayout {
-                    descriptor_type: DescriptorType::StorageBuffer, // Only storage buffers for now
-                    descriptor_count: 1,
+                // Set buffer type depending on input data
+                match data {
+                    DescriptorData::Buffer(_) => VGFXDescriptorSetLayout {
+                        descriptor_type: DescriptorType::StorageBuffer,
+                        descriptor_count: 1,
+                    },
+                    DescriptorData::Texture(_) => VGFXDescriptorSetLayout {
+                        descriptor_type: DescriptorType::SampledImage,
+                        descriptor_count: 1,
+                    },
                 },
             );
         }
@@ -433,19 +520,55 @@ fn push_descriptor_set(
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::for_value(descriptor_set_with_data.data.get(binding).unwrap())
-                    .unwrap(),
+                match descriptor_set_with_data.data.get(binding).unwrap() {
+                    DescriptorData::Buffer(b) => DeviceLayout::for_value(b).unwrap(),
+                    DescriptorData::Texture(t) => {
+                        let subresource_layout = resources
+                            .image(t.0)
+                            .unwrap()
+                            .image()
+                            .subresource_layout(ImageAspect::Color, 0, 0) // Shits busted
+                            .unwrap(); 
+                        DeviceLayout::from_size_alignment(
+                            subresource_layout.size,
+                            subresource_layout.row_pitch,
+                        )
+                        .unwrap()
+                    }
+                },
             )
             .unwrap();
 
-        // Note our write to this buffer
-        descriptor_writes.push(WriteDescriptorSet::buffer(
-            *binding,
-            Subbuffer::new(resources.buffer(device_buffer).unwrap().buffer().clone()),
-        ));
-
         // Wait for GPU to finish flight
         resources.flight(flight_id).unwrap().wait(None).unwrap();
+
+        let mut host_buffer_accesses = vec![];
+        let mut image_accesses = vec![];
+        let mut buffer_accesses = vec![];
+
+        match descriptor_set_with_data.data.get(binding).unwrap() {
+            DescriptorData::Buffer(_) => {
+                descriptor_writes.push(WriteDescriptorSet::buffer(
+                    *binding,
+                    Subbuffer::new(resources.buffer(device_buffer).unwrap().buffer().clone()),
+                ));
+                host_buffer_accesses = vec![(device_buffer, HostAccessType::Write)]
+            }
+            DescriptorData::Texture(t) => {
+                descriptor_writes.push(WriteDescriptorSet::image_view(
+                    *binding,
+                    ImageView::new_default(resources.image(t.0).unwrap().image().clone()).unwrap(),
+                ));
+                host_buffer_accesses = vec![(device_buffer, HostAccessType::Write)];
+                image_accesses = vec![(
+                    t.0,
+                    AccessTypes::COPY_TRANSFER_WRITE,
+                    ImageLayoutType::General,
+                )]
+            }
+        }
+
+        
 
         // Write buffer to GPU
         unsafe {
@@ -456,13 +579,18 @@ fn push_descriptor_set(
                 |_cbf, tcx| {
                     tcx.write_buffer::<[u8]>(device_buffer, ..)
                         .unwrap()
-                        .copy_from_slice(descriptor_set_with_data.data.get(binding).unwrap());
+                        .copy_from_slice(
+                            match descriptor_set_with_data.data.get(binding).unwrap() {
+                                DescriptorData::Buffer(b) => b,
+                                DescriptorData::Texture(t) => t.2.as_raw(),
+                            },
+                        );
 
                     Ok(())
                 },
-                [(device_buffer, HostAccessType::Write)],
-                [],
-                [],
+                host_buffer_accesses,
+                buffer_accesses,
+                image_accesses,
             )
         }
         .unwrap();

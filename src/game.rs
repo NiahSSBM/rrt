@@ -9,6 +9,11 @@ use std::time::Instant;
 
 use color::AlphaColor;
 use color::palette::css;
+use image::ImageBuffer;
+use image::ImageError;
+use image::Rgb;
+use image::Rgba;
+use image::open;
 use nalgebra::Matrix4;
 use nalgebra::Point3;
 use nalgebra::Rotation;
@@ -154,12 +159,16 @@ fn game_init(data: &GameData, state: &mut GameState) {
             model_indicies.iter().map(|i| i.clone() as u32).collect(),
             tri_shaders,
         )));
-        let mut object = Object::from_mesh(mesh);
+
+        match load_image("textures/texture.jpg") {
+            Ok(i) => {mesh.lock().unwrap().shader.set_texture(i)},
+            Err(e) => println!("Could not load image: {:?}", e),
+        };
+
+        let mut object = Object::from_mesh(mesh.clone());
         object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
-
-        object.load_image("textures/texture.jpg");
 
         state.objects.push(object);
         i += 3;
@@ -317,6 +326,10 @@ fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     }
 
     loaded_models
+}
+
+fn load_image(path: &str) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, ImageError> {
+    Ok(open(path)?.to_rgba8())
 }
 
 pub fn game_main(data: GameData) {

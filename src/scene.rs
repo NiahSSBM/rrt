@@ -32,7 +32,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    mesh::{Mesh3D, combine_vec},
+    mesh::Mesh3D,
     shader::{Shader, Vertex3D},
     vgfx::WindowContext,
 };

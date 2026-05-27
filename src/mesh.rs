@@ -1,3 +1,6 @@
+use vulkano::image::Image;
+use vulkano_taskgraph::Id;
+
 use crate::shader::{Shader, Vertex3D};
 
 #[derive(Clone)]
@@ -15,14 +18,4 @@ impl Mesh3D {
             shader,
         }
     }
-}
-
-pub fn combine_vec<T>(verts: Vec<Vec<T>>) -> Vec<T> {
-    let mut out: Vec<T> = Vec::new();
-    for mut vec in verts {
-        out.try_reserve(vec.len())
-            .unwrap_or_else(|e| panic!("Could not combine verticies: {:?}", e));
-        out.append(&mut vec);
-    }
-    out
 }

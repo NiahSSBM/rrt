@@ -397,7 +397,7 @@ fn get_depthimage_createinfo(viewport: Viewport) -> ImageCreateInfo {
     ImageCreateInfo {
         image_type: ImageType::Dim2d,
         format: Format::D32_SFLOAT,
-        view_formats: vec![],
+        view_formats: vec![Format::D32_SFLOAT],
         extent: [viewport.extent[0] as u32, viewport.extent[1] as u32, 1],
         array_layers: 1,
         mip_levels: 1,
