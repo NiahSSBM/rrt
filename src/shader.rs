@@ -9,7 +9,7 @@ use std::{
     vec,
 };
 use vulkano::{
-    Validated, VulkanError,
+    DeviceSize, Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     descriptor_set::{
         DescriptorSet, DescriptorSetWithOffsets, WriteDescriptorSet,
@@ -27,16 +27,18 @@ use vulkano::{
         sampler::{Sampler, SamplerCreateInfo},
         view::ImageView,
     },
-    memory::allocator::{
-        AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
+    memory::{
+        DeviceAlignment,
+        allocator::{
+            AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
+        },
     },
     pipeline::PipelineLayout,
     shader::{EntryPoint, ShaderStage, ShaderStages},
     sync::Sharing,
 };
 use vulkano_taskgraph::{
-    Id,
-    resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
+    Id, command_buffer::CopyBufferToImageInfo, resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources}
 };
 
 // Size in bytes
@@ -58,6 +60,7 @@ pub enum ShaderType {
 enum DescriptorData {
     Buffer([u8; STORAGE_BUFFER_BINDING_MAX_SIZE]),
     Texture((Id<Image>, Arc<Sampler>, ImageBuffer<Rgba<u8>, Vec<u8>>)),
+    //Sampler(Arc<Sampler>),
 }
 
 #[derive(Clone)]
@@ -201,39 +204,95 @@ impl Shader {
         self.staged_texture = Some(texture);
     }
 
-    fn load_texture(&mut self, texture: ImageBuffer<Rgba<u8>, Vec<u8>>) {
-        // TODO: Don't recreate a memory allocator every time this is called
-        let image = Image::new(
-            Arc::new(StandardMemoryAllocator::new_default(
+    fn load_texture(&mut self, texture: ImageBuffer<Rgba<u8>, Vec<u8>>, flight_id: Id<Flight>) {
+        self.sampler = Some(
+            Sampler::new(
                 self.queue.clone().unwrap().device().clone(),
-            )),
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: Format::R8G8B8A8_SRGB,
-                view_formats: vec![Format::R8G8B8A8_SRGB],
-                extent: [texture.width(), texture.height(), 1],
-                array_layers: 1,
-                mip_levels: 1,
-                samples: SampleCount::Sample1,
-                tiling: ImageTiling::Linear,
-                usage: ImageUsage::SAMPLED,
-                stencil_usage: None,
-                sharing: Sharing::Exclusive,
-                initial_layout: ImageLayout::Undefined,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        )
+                SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+            )
+            .unwrap(),
+        );
+
+        let create_info = ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format: Format::R8G8B8A8_SRGB,
+            view_formats: vec![Format::R8G8B8A8_SRGB],
+            extent: [texture.width(), texture.height(), 1],
+            array_layers: 1,
+            mip_levels: 1,
+            samples: SampleCount::Sample1,
+            tiling: ImageTiling::Linear,
+            usage: ImageUsage::SAMPLED,
+            stencil_usage: None,
+            sharing: Sharing::Exclusive,
+            initial_layout: ImageLayout::Undefined,
+            ..Default::default()
+        };
+
+        // Create staging buffer
+        let host_buffer = self
+            .resources
+            .clone()
+            .unwrap()
+            .create_buffer(
+                BufferCreateInfo {
+                    usage: BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::from_size_alignment(
+                    texture.len() as DeviceSize,
+                    DeviceSize::from(DeviceAlignment::of::<ImageBuffer<Rgba<u8>, Vec<u8>>>()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        // Create final destination buffer
+        let device_buffer = self
+            .resources
+            .clone()
+            .unwrap()
+            .create_image(
+                create_info,
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        unsafe {
+            vulkano_taskgraph::execute(
+                &self.queue.clone().unwrap(),
+                &self.resources.clone().unwrap(),
+                flight_id,
+                |cbf, tcx| {
+                    // Copy image into staging buffer
+                    tcx.write_buffer::<[u8]>(host_buffer, ..)
+                        .unwrap()
+                        .copy_from_slice(&texture);
+
+                    // Copy staging buffer into device buffer
+                    cbf.copy_buffer_to_image(&CopyBufferToImageInfo {
+                        src_buffer: host_buffer,
+                        dst_image: device_buffer,
+                        ..Default::default()
+                    }).unwrap();
+                    Ok(())
+                },
+                vec![(host_buffer, HostAccessType::Write)],
+                vec![],
+                vec![],
+            )
+        }
         .unwrap();
 
-        let sampler = Sampler::new(
-            self.queue.clone().unwrap().device().clone(),
-            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-        )
-        .unwrap();
-
-        self.sampler = Some(sampler);
-        self.image = Some(self.resources.clone().unwrap().add_image(image));
+        self.image = Some(device_buffer);
     }
 
     pub fn build(&mut self, queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) {
@@ -246,7 +305,7 @@ impl Shader {
 
         match self.staged_texture.clone() {
             Some(t) => {
-                self.load_texture(t);
+                self.load_texture(t, flight_id);
                 self.raw_texture = self.staged_texture.clone();
                 self.staged_texture = None;
             }
@@ -407,6 +466,10 @@ impl Shader {
                         descriptor_type: DescriptorType::SampledImage,
                         descriptor_count: 1,
                     },
+                    //DescriptorData::Sampler(_) => VGFXDescriptorSetLayout {
+                    //    descriptor_type: DescriptorType::Sampler,
+                    //    descriptor_count: 1,
+                    //},
                 },
             );
         }
@@ -527,14 +590,14 @@ fn push_descriptor_set(
                             .image(t.0)
                             .unwrap()
                             .image()
-                            .subresource_layout(ImageAspect::Color, 0, 0) // Shits busted
-                            .unwrap(); 
+                            .subresource_layout(ImageAspect::Color, 0, 0)
+                            .unwrap();
                         DeviceLayout::from_size_alignment(
                             subresource_layout.size,
-                            subresource_layout.row_pitch,
+                            (size_of::<u8>() * 4) as u64,
                         )
                         .unwrap()
-                    }
+                    } //DescriptorData::Sampler(s) => DeviceLayout::new_unsized::<Sampler>(1).unwrap()
                 },
             )
             .unwrap();
@@ -562,13 +625,11 @@ fn push_descriptor_set(
                 host_buffer_accesses = vec![(device_buffer, HostAccessType::Write)];
                 image_accesses = vec![(
                     t.0,
-                    AccessTypes::COPY_TRANSFER_WRITE,
+                    AccessTypes::GENERAL, // TODO: Change this after debugging
                     ImageLayoutType::General,
                 )]
             }
         }
-
-        
 
         // Write buffer to GPU
         unsafe {
