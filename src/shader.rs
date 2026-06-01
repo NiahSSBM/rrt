@@ -38,8 +38,12 @@ use vulkano::{
     sync::Sharing,
 };
 use vulkano_taskgraph::{
-    Id, command_buffer::CopyBufferToImageInfo, resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources}
+    Id,
+    command_buffer::CopyBufferToImageInfo,
+    resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
+
+use crate::shader::AdditionalShaderProperties::Texture;
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -60,22 +64,27 @@ pub enum ShaderType {
 enum DescriptorData {
     Buffer([u8; STORAGE_BUFFER_BINDING_MAX_SIZE]),
     Texture((Id<Image>, Arc<Sampler>, ImageBuffer<Rgba<u8>, Vec<u8>>)),
-    //Sampler(Arc<Sampler>),
+    Sampler(Arc<Sampler>),
 }
 
 #[derive(Clone)]
 pub enum AdditionalShaderProperties {
     // Model, View, Projection
     Perspective([[f32; 4]; 4], [[f32; 4]; 4], [[f32; 4]; 4]),
+    Texture(ImageBuffer<Rgba<u8>, Vec<u8>>),
 }
 
 impl AdditionalShaderProperties {
     fn perspective_default() -> Self {
-        return Self::Perspective(
+        Self::Perspective(
             Matrix4::identity().into(),
             Matrix4::identity().into(),
             Matrix4::identity().into(),
-        );
+        )
+    }
+
+    fn texture_default() -> Self {
+        Self::Texture(ImageBuffer::<Rgba<u8>, Vec<u8>>::new(32, 32))
     }
 }
 
@@ -129,10 +138,8 @@ pub struct Shader {
     pub additional_properties: Vec<AdditionalShaderProperties>,
     descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
     resources: Option<Arc<Resources>>,
-    //texture_view: Option<Arc<ImageView>>,
     sampler: Option<Arc<Sampler>>,
     staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
-    raw_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
     image: Option<Id<Image>>,
 }
 
@@ -192,10 +199,8 @@ impl Shader {
             additional_properties,
             descriptor_set_allocator: None,
             resources: None,
-            //texture_view: None,
             sampler: None,
             staged_texture: None,
-            raw_texture: None,
             image: None,
         }
     }
@@ -204,30 +209,16 @@ impl Shader {
         self.staged_texture = Some(texture);
     }
 
-    fn load_texture(&mut self, texture: ImageBuffer<Rgba<u8>, Vec<u8>>, flight_id: Id<Flight>) {
-        self.sampler = Some(
-            Sampler::new(
-                self.queue.clone().unwrap().device().clone(),
-                SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-            )
-            .unwrap(),
-        );
-
-        let create_info = ImageCreateInfo {
-            image_type: ImageType::Dim2d,
-            format: Format::R8G8B8A8_SRGB,
-            view_formats: vec![Format::R8G8B8A8_SRGB],
-            extent: [texture.width(), texture.height(), 1],
-            array_layers: 1,
-            mip_levels: 1,
-            samples: SampleCount::Sample1,
-            tiling: ImageTiling::Linear,
-            usage: ImageUsage::SAMPLED,
-            stencil_usage: None,
-            sharing: Sharing::Exclusive,
-            initial_layout: ImageLayout::Undefined,
-            ..Default::default()
-        };
+    fn load_texture(
+        &self,
+        texture: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        flight_id: Id<Flight>,
+    ) -> (Id<Image>, Arc<Sampler>) {
+        let sampler = Sampler::new(
+            self.queue.clone().unwrap().device().clone(),
+            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+        )
+        .unwrap();
 
         // Create staging buffer
         let host_buffer = self
@@ -258,7 +249,21 @@ impl Shader {
             .clone()
             .unwrap()
             .create_image(
-                create_info,
+                ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format: Format::R8G8B8A8_SRGB,
+                    view_formats: vec![Format::R8G8B8A8_SRGB],
+                    extent: [texture.width(), texture.height(), 1],
+                    array_layers: 1,
+                    mip_levels: 1,
+                    samples: SampleCount::Sample1,
+                    tiling: ImageTiling::Linear,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                    stencil_usage: None,
+                    sharing: Sharing::Exclusive,
+                    initial_layout: ImageLayout::Undefined,
+                    ..Default::default()
+                },
                 AllocationCreateInfo {
                     memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                     ..Default::default()
@@ -282,7 +287,8 @@ impl Shader {
                         src_buffer: host_buffer,
                         dst_image: device_buffer,
                         ..Default::default()
-                    }).unwrap();
+                    })
+                    .unwrap();
                     Ok(())
                 },
                 vec![(host_buffer, HostAccessType::Write)],
@@ -292,7 +298,8 @@ impl Shader {
         }
         .unwrap();
 
-        self.image = Some(device_buffer);
+        (device_buffer, sampler)
+        //self.image = Some(device_buffer);
     }
 
     pub fn build(&mut self, queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) {
@@ -306,7 +313,7 @@ impl Shader {
         match self.staged_texture.clone() {
             Some(t) => {
                 self.load_texture(t, flight_id);
-                self.raw_texture = self.staged_texture.clone();
+                //self.raw_texture = self.staged_texture.clone();
                 self.staged_texture = None;
             }
             None => {}
@@ -343,35 +350,40 @@ impl Shader {
 
         for (s_stage, s_type) in self.stage_pipeline.clone() {
             let entry: EntryPoint;
-            let binding: u32;
-            let data: DescriptorData;
+            let mut data: BTreeMap<u32, DescriptorData>;
 
-            (entry, binding, data) = match s_type {
+            (entry, data) = match s_type {
                 ShaderType::VertexDefault => {
                     let perspective = get_shader_property(
                         AdditionalShaderProperties::perspective_default(),
                         &self.additional_properties,
                     )
                     .expect("No perspective property on shader that requires perspective!");
+
                     (
                         vs_default::load(device.clone())
                             .unwrap()
                             .entry_point("main")
                             .unwrap(),
-                        0,
-                        DescriptorData::Buffer(pad(bytes_of(&vs_default::vInput {
-                            mvp: {
-                                match perspective {
-                                    AdditionalShaderProperties::Perspective(model, view, proj) => {
-                                        vs_default::MVPBuffer {
+                        BTreeMap::from([(
+                            0,
+                            DescriptorData::Buffer(pad(bytes_of(&vs_default::vInput {
+                                mvp: {
+                                    match perspective {
+                                        AdditionalShaderProperties::Perspective(
+                                            model,
+                                            view,
+                                            proj,
+                                        ) => vs_default::MVPBuffer {
                                             model: *model,
                                             view: *view,
                                             proj: *proj,
-                                        }
+                                        },
+                                        _ => panic!("This branch should never be reached"),
                                     }
-                                }
-                            },
-                        }))),
+                                },
+                            }))),
+                        )]),
                     )
                 }
                 ShaderType::VertexCustom => (
@@ -379,58 +391,83 @@ impl Shader {
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    0,
-                    DescriptorData::Buffer(pad(bytes_of(&vs_custom::vColor {
-                        colors: [
-                            [1.0, 0.0, 0.0, 1.0].into(),
-                            [0.0, 1.0, 0.0, 1.0].into(),
-                            [0.0, 0.0, 1.0, 1.0].into(),
-                        ],
-                    }))),
+                    BTreeMap::from([(
+                        0,
+                        DescriptorData::Buffer(pad(bytes_of(&vs_custom::vColor {
+                            colors: [
+                                [1.0, 0.0, 0.0, 1.0].into(),
+                                [0.0, 1.0, 0.0, 1.0].into(),
+                                [0.0, 0.0, 1.0, 1.0].into(),
+                            ],
+                        }))),
+                    )]),
                 ),
                 ShaderType::VertexWireframe => (
                     vs_wireframe::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    0,
-                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
+                    BTreeMap::from([(0, DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))))]),
                 ),
-                ShaderType::FragmentDefault => (
-                    fs_default::load(device.clone())
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap(),
-                    2,
-                    match self.image {
-                        Some(_) => DescriptorData::Texture((
-                            self.image.clone().unwrap(),
-                            self.sampler.clone().unwrap(),
-                            self.raw_texture.clone().unwrap(),
-                        )),
-                        None => DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
-                    },
-                ),
+                ShaderType::FragmentDefault => {
+                    let default_texture = AdditionalShaderProperties::texture_default();
+                    let texture = get_shader_property(
+                        AdditionalShaderProperties::texture_default(),
+                        &self.additional_properties,
+                    )
+                    .unwrap_or({
+                        println!("No texture property on shader that requires a texture!");
+                        &default_texture
+                    });
+
+                    (
+                        fs_default::load(device.clone())
+                            .unwrap()
+                            .entry_point("main")
+                            .unwrap(),
+                        BTreeMap::from([
+                            
+                            (
+                                2,
+                                match texture {
+                                    AdditionalShaderProperties::Texture(t) => {
+                                        let (texture, sampler) =
+                                            self.load_texture(t.clone(), flight_id);
+                                        self.image = Some(texture);
+                                        self.sampler = Some(sampler.clone());
+                                        DescriptorData::Texture((texture, sampler, t.clone()))
+                                    }
+                                    _ => panic!("This should never be reached"),
+                                },
+                            ),
+                            (
+                                1,
+                                match &self.sampler {
+                                    Some(s) => DescriptorData::Sampler(s.clone()),
+                                    None => DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
+                                },
+                            ),
+                        ]),
+                    )
+                }
                 ShaderType::FragmentCustom => (
                     fs_wireframe::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    0,
-                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
+                    BTreeMap::from([(0, DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))))]),
                 ),
                 ShaderType::FragmentWireframe => (
                     fs_custom::load(device.clone())
                         .unwrap()
                         .entry_point("main")
                         .unwrap(),
-                    0,
-                    DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))),
+                    BTreeMap::from([(0, DescriptorData::Buffer(pad(bytes_of::<[u8; 0]>(&[]))))]),
                 ),
             };
 
             stage_entries.insert(s_stage, entry.clone());
-            binding_data.insert(binding, data);
+            binding_data.append(&mut data);
         }
 
         let (descriptor_sets, pipeline_layout) =
@@ -466,20 +503,20 @@ impl Shader {
                         descriptor_type: DescriptorType::SampledImage,
                         descriptor_count: 1,
                     },
-                    //DescriptorData::Sampler(_) => VGFXDescriptorSetLayout {
-                    //    descriptor_type: DescriptorType::Sampler,
-                    //    descriptor_count: 1,
-                    //},
+                    DescriptorData::Sampler(_) => VGFXDescriptorSetLayout {
+                        descriptor_type: DescriptorType::Sampler,
+                        descriptor_count: 1,
+                    },
                 },
             );
         }
 
-        let descriptor_set_layout =
+        let layout =
             create_descriptor_set_layout(descriptor_set_layout_create_info, queue.device().clone())
                 .unwrap();
 
         let descriptor_layouts_with_data = VGFXDescriptorSetLayoutWithData {
-            layout: descriptor_set_layout.clone(),
+            layout,
             data: binding_data,
         };
 
@@ -497,7 +534,14 @@ impl Shader {
     // This is temporarily very simple to test what it takes to update descriptor data
     // This is for updating the perspective matrix
     pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
-        self.additional_properties = vec![shader_property];
+        let mut existing_index = 0;
+        for (i, property) in self.additional_properties.iter().enumerate() {
+            if std::mem::discriminant(property) == std::mem::discriminant(&shader_property) {
+                existing_index = i;
+            }
+        }
+        self.additional_properties.remove(existing_index);
+        self.additional_properties.push(shader_property);
     }
 }
 
@@ -527,8 +571,7 @@ fn create_descriptor_set_layout(
 
     // Create layout from our bindings
     let create_info = DescriptorSetLayoutCreateInfo {
-        flags: Default::default(),
-        bindings: bindings.clone(),
+        bindings,
         ..Default::default()
     };
 
@@ -597,7 +640,8 @@ fn push_descriptor_set(
                             (size_of::<u8>() * 4) as u64,
                         )
                         .unwrap()
-                    } //DescriptorData::Sampler(s) => DeviceLayout::new_unsized::<Sampler>(1).unwrap()
+                    }
+                    DescriptorData::Sampler(s) => DeviceLayout::for_value(&0).unwrap(),
                 },
             )
             .unwrap();
@@ -629,6 +673,10 @@ fn push_descriptor_set(
                     ImageLayoutType::General,
                 )]
             }
+            DescriptorData::Sampler(s) => {
+                descriptor_writes.push(WriteDescriptorSet::sampler(*binding, s.clone()));
+                host_buffer_accesses = vec![(device_buffer, HostAccessType::Write)];
+            }
         }
 
         // Write buffer to GPU
@@ -644,6 +692,7 @@ fn push_descriptor_set(
                             match descriptor_set_with_data.data.get(binding).unwrap() {
                                 DescriptorData::Buffer(b) => b,
                                 DescriptorData::Texture(t) => t.2.as_raw(),
+                                DescriptorData::Sampler(s) => &[0; 4],
                             },
                         );
 

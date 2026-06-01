@@ -133,11 +133,14 @@ fn game_init(data: &GameData, state: &mut GameState) {
     for model in models {
         let tri_shaders = Shader::new(
             stage_pipeline.clone(),
-            vec![AdditionalShaderProperties::Perspective(
-                state.camera.perspective[0],
-                state.camera.perspective[1],
-                state.camera.perspective[2],
-            )],
+            vec![
+                AdditionalShaderProperties::Perspective(
+                    state.camera.perspective[0],
+                    state.camera.perspective[1],
+                    state.camera.perspective[2],
+                ),
+                AdditionalShaderProperties::Texture(load_image("textures/texture.jpg").unwrap()),
+            ],
         );
         let mut model_verts: Vec<Vertex3D> = vec![];
         let mut model_indicies: Vec<usize> = vec![];
@@ -160,10 +163,10 @@ fn game_init(data: &GameData, state: &mut GameState) {
             tri_shaders,
         )));
 
-        match load_image("textures/texture.jpg") {
-            Ok(i) => {mesh.lock().unwrap().shader.set_texture(i)},
-            Err(e) => println!("Could not load image: {:?}", e),
-        };
+        //match load_image("textures/texture.jpg") {
+        //    Ok(i) => {mesh.lock().unwrap().shader.set_texture(i)},
+        //    Err(e) => println!("Could not load image: {:?}", e),
+        //};
 
         let mut object = Object::from_mesh(mesh.clone());
         object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));

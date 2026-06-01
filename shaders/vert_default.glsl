@@ -9,12 +9,14 @@ struct MVPBuffer {
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec4 color;
 layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec2 tex_coords;
 layout(binding = 0) readonly buffer vInput {
     MVPBuffer mvp;
 };
 
 void main() {
     gl_Position = mvp.proj * mvp.view *  mvp.model * vec4(position, 1.0);
+    tex_coords = position.xy + vec2(0.5);
 
     fragColor = color;
 }
