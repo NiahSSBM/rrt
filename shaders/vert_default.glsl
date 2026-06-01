@@ -16,7 +16,7 @@ layout(binding = 0) readonly buffer vInput {
 
 void main() {
     gl_Position = mvp.proj * mvp.view *  mvp.model * vec4(position, 1.0);
-    tex_coords = position.xy + vec2(0.5);
+    tex_coords = position.xy;
 
     fragColor = color;
 }

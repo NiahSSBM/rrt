@@ -271,6 +271,15 @@ impl Shader {
             )
             .unwrap();
 
+        // Wait for GPU to finish flight
+        self.resources
+            .clone()
+            .unwrap()
+            .flight(flight_id)
+            .unwrap()
+            .wait(None)
+            .unwrap();
+
         unsafe {
             vulkano_taskgraph::execute(
                 &self.queue.clone().unwrap(),
@@ -414,8 +423,7 @@ impl Shader {
                     let texture = get_shader_property(
                         AdditionalShaderProperties::texture_default(),
                         &self.additional_properties,
-                    )
-                    .unwrap_or({
+                    ).unwrap_or_else(|| {
                         println!("No texture property on shader that requires a texture!");
                         &default_texture
                     });
@@ -426,7 +434,6 @@ impl Shader {
                             .entry_point("main")
                             .unwrap(),
                         BTreeMap::from([
-                            
                             (
                                 2,
                                 match texture {
@@ -531,16 +538,22 @@ impl Shader {
         (descriptor_sets, pipeline_layout)
     }
 
-    // This is temporarily very simple to test what it takes to update descriptor data
-    // This is for updating the perspective matrix
+    // Searches for an already existing property and replaces it
+    // If there is no property, it is added
     pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
-        let mut existing_index = 0;
+        let mut existing_index = Some(0);
         for (i, property) in self.additional_properties.iter().enumerate() {
             if std::mem::discriminant(property) == std::mem::discriminant(&shader_property) {
-                existing_index = i;
+                existing_index = Some(i);
             }
         }
-        self.additional_properties.remove(existing_index);
+
+        match existing_index {
+            Some(i) => {
+                self.additional_properties.remove(i);
+            }
+            None => (),
+        }
         self.additional_properties.push(shader_property);
     }
 }
@@ -669,7 +682,7 @@ fn push_descriptor_set(
                 host_buffer_accesses = vec![(device_buffer, HostAccessType::Write)];
                 image_accesses = vec![(
                     t.0,
-                    AccessTypes::GENERAL, // TODO: Change this after debugging
+                    AccessTypes::COPY_TRANSFER_WRITE,
                     ImageLayoutType::General,
                 )]
             }
