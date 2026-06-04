@@ -318,7 +318,13 @@ impl WindowContext {
 
         let mut new_buffers = BTreeMap::new();
         for (i, buffer) in &self.scene_task.buffers {
-            new_buffers.insert(*i, (self.meshes.get(*i).unwrap().lock().unwrap().shader.clone(), buffer.1, buffer.2));
+            let mesh = self.meshes.get(*i);
+
+            if mesh.is_none() {
+                return; // No meshes are loaded
+            }
+            
+            new_buffers.insert(*i, (mesh.unwrap().lock().unwrap().shader.clone(), buffer.1, buffer.2));
         }
         self.scene_task.buffers = new_buffers;
 

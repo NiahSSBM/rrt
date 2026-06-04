@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::fs::OpenOptions;
+use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
+use std::vec;
 
 use color::AlphaColor;
 use color::palette::css;
+use gltf::Gltf;
 use image::ImageBuffer;
 use image::ImageError;
 use image::Rgb;
@@ -125,8 +128,11 @@ fn game_init(data: &GameData, state: &mut GameState) {
     ]);
 
     // Load STL model file
-    let model_paths = vec!["models/horse.stl", "models/pig.stl"];
-    let models = load_stls(model_paths);
+    let stl_paths = vec!["models/horse.stl", "models/pig.stl"];
+    let models = load_stls(stl_paths.clone());
+
+    let gltf_paths = vec!["models/scene.gltf"];
+    let gltf_models = load_gltfs(gltf_paths);
 
     // Assemble verticies into models
     let mut i = 0;
@@ -182,7 +188,7 @@ fn game_init(data: &GameData, state: &mut GameState) {
         if object.mesh.is_some() {
             // Skip empty objects
             data.to_render
-                .send(RenderEvent::AddMesh(object.mesh.clone().unwrap())) // TODO: see if we can get around this clone
+                .send(RenderEvent::AddMesh(object.mesh.clone().unwrap()))
                 .expect("Failed to send mesh data to render thread!");
             data.to_render
                 .send(RenderEvent::UpdateVertexBuffer)
@@ -299,11 +305,83 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
+fn load_gltfs(paths: Vec<&str>) {
+    for path in paths {
+        println!("Loading GLTF {}", path);
+        let (document, buffers, images) = match gltf::import(path) {
+            Ok(g) => g,
+            Err(e) => {
+                println!("Error opening GLTF file: {e}");
+                continue;
+            }
+        };
+
+        println!("Scenes loaded: {}", document.scenes().count());
+        for scene in document.scenes() {
+            println!(
+                "Loaded Scene {}",
+                scene.name().unwrap_or("[unnammed scene]")
+            );
+            println!("Scene has {} nodes", scene.nodes().len());
+            for node in scene.nodes() {
+                walk_gltf_nodes(&node, 0);
+            }
+        }
+    }
+}
+
+fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
+    for node in node.children() {
+        println!(
+            "{:width$}Loaded Node {} with {} child nodes",
+            "",
+            node.name().unwrap_or("[unnammed node]"),
+            node.children().len(),
+            width = depth
+        );
+        if let Some(mesh) = node.mesh() {
+            println!(
+                "{:width$}Loaded Mesh {} with {} primitives",
+                "",
+                mesh.name().unwrap_or("[unnammed mesh]"),
+                mesh.primitives().len(),
+                width = depth
+            );
+            for primitive in mesh.primitives() {
+                println!(
+                    "{:width$}Loaded {:?} primitive",
+                    "",
+                    primitive.mode(),
+                    width = depth + 1
+                );
+                if let Some(indices) = primitive.indices() {
+                    println!(
+                        "{:width$}Primitive contains {} indices and {} attributes",
+                        "",
+                        indices.count(),
+                        primitive.attributes().count(),
+                        width = depth + 2
+                    );
+                }
+            }
+        }
+        if let Some(camera) = node.camera() {
+            println!(
+                "{:width$}Loaded Camera {}",
+                "",
+                camera.name().unwrap_or("[unnammed camera]"),
+                width = depth
+            );
+        }
+        walk_gltf_nodes(&node, depth + 1);
+    }
+}
+
 fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     let mut loaded_models: Vec<IndexedMesh> = Vec::new();
 
     for path in paths {
-        println!("Loading model {}", path);
+        println!("Loading STL {}", path);
         let mut file = match OpenOptions::new().read(true).open(path) {
             Ok(f) => f,
             Err(e) => {
