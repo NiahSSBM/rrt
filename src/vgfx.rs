@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, TryReserveError};
 use std::sync::{Arc, Mutex};
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::thread::JoinHandle;
 use std::vec;
 use vulkano::buffer::Buffer;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
@@ -71,14 +72,20 @@ pub struct WindowContext {
     pub requested_resize: bool,
     pub recreate_swapchain: bool,
     pub viewport: Viewport,
-    pub game_thread_receiver: Option<Receiver<RenderEvent>>,
-    pub game_thread_sender: Option<Sender<GameEvent>>,
+    pub game_thread_handle: Option<std::thread::JoinHandle<()>>,
+    pub game_thread_receiver: Receiver<RenderEvent>,
+    pub game_thread_sender: Sender<GameEvent>,
     pub last_cursor_position: PhysicalPosition<f64>,
     pub platform: Platform,
 }
 
 impl WindowContext {
-    pub fn new(event_loop: &ActiveEventLoop, preferred_device: Option<String>) -> Self {
+    pub fn new(
+        event_loop: &ActiveEventLoop,
+        preferred_device: Option<String>,
+        join_handle: JoinHandle<()>,
+        (game_thread_sender, game_thread_receiver): (Sender<GameEvent>, Receiver<RenderEvent>),
+    ) -> Self {
         // Start by initializing Vulkan
         let vulkan_libary = VulkanLibrary::new()
             .unwrap_or_else(|err| panic!("Couldn't load Vulkan library: {:?}", err));
@@ -228,8 +235,9 @@ impl WindowContext {
             requested_resize: false,
             recreate_swapchain: false,
             viewport,
-            game_thread_receiver: None,
-            game_thread_sender: None,
+            game_thread_handle: Some(join_handle),
+            game_thread_receiver,
+            game_thread_sender,
             last_cursor_position: PhysicalPosition::default(),
         }
     }

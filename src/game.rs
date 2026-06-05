@@ -149,7 +149,7 @@ fn game_init(data: &GameData, state: &mut GameState) {
             ],
         );
         let mut model_verts: Vec<Vertex3D> = vec![];
-        let mut model_indicies: Vec<usize> = vec![];
+        let mut model_indices: Vec<usize> = vec![];
 
         for vertex in model.vertices {
             let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
@@ -158,14 +158,14 @@ fn game_init(data: &GameData, state: &mut GameState) {
             model_verts.push(Vertex3D::new(vertex.into(), colors[rand as usize]));
         }
         for face in model.faces {
-            for tri_indicies in face.vertices {
-                model_indicies.push(tri_indicies);
+            for tri_indices in face.vertices {
+                model_indices.push(tri_indices);
             }
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
             model_verts.clone(),
-            model_indicies.iter().map(|i| i.clone() as u32).collect(),
+            model_indices.iter().map(|i| i.clone() as u32).collect(),
             tri_shaders,
         )));
 
@@ -206,8 +206,7 @@ fn update(data: &GameData, state: &mut GameState) -> GameStatus {
 fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     let (mut x_delta, mut y_delta) = (0.0, 0.0);
 
-    let events = data.from_render.try_iter();
-    for event in events {
+    for event in data.from_render.try_iter() {
         match event {
             GameEvent::GameClose => {
                 println!("Game thread exiting...");
@@ -295,12 +294,12 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         }
     }
 
-    data.to_render
-        .send(RenderEvent::UpdateShader)
-        .expect("Failed to request shader update!");
-    data.to_render
-        .send(RenderEvent::UpdateTaskGraph)
-        .expect("Failed to request task graph update!");
+    if let Err(e) = data.to_render.send(RenderEvent::UpdateShader) {
+        println!("Failed to request shader update: {e}");
+    }
+    if let Err(e) = data.to_render.send(RenderEvent::UpdateTaskGraph) {
+        println!("Failed to request task graph update: {e}");
+    }
 
     GameStatus::Ok
 }

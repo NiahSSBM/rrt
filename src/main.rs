@@ -1,9 +1,9 @@
 mod game;
 mod mesh;
+mod object;
 mod scene;
 mod shader;
 mod vgfx;
-mod object;
 
 use std::f64::consts::E;
 use std::sync::{Mutex, mpsc};
@@ -46,21 +46,26 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let window_context = WindowContext::new(&event_loop, self.preferred_device.clone());
-        self.window_contexts.push(window_context);
-
-        for i in 0..self.window_contexts.len() {
+        for i in 0..1 {
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
             let game_data = GameData {
                 to_render,
                 from_render,
             };
-            self.window_contexts[i].game_thread_receiver = Some(from_game);
-            self.window_contexts[i].game_thread_sender = Some(to_game);
-            thread::spawn(|| {
+
+            let handle = thread::spawn(|| {
                 game::game_main(game_data);
             });
+
+            let window_context = WindowContext::new(
+                &event_loop,
+                self.preferred_device.clone(),
+                handle,
+                (to_game, from_game),
+            );
+
+            self.window_contexts.push(window_context);
         }
     }
 
@@ -78,8 +83,6 @@ impl ApplicationHandler for App {
                         println!("The close button was pressed; stopping");
                         let _ = window_context
                             .game_thread_sender
-                            .as_ref()
-                            .unwrap()
                             .send(game::GameEvent::GameClose)
                             .inspect_err(|e|println!(
                                 "Failed to send game close event to render thread, closing anyway... {:?}", e));
@@ -119,8 +122,6 @@ impl ApplicationHandler for App {
                         // Get one event sent from game thread
                         let event = window_context
                             .game_thread_receiver
-                            .as_ref()
-                            .unwrap()
                             .try_recv();
                         match event {
                             Ok(e) => match e {
@@ -197,8 +198,6 @@ impl ApplicationHandler for App {
                         }
                         let _ = window_context
                             .game_thread_sender
-                            .as_ref()
-                            .unwrap()
                             .send(GameEvent::KeyEvent(event.clone()))
                             .inspect_err(|e| {
                                 println!(
@@ -235,8 +234,6 @@ impl ApplicationHandler for App {
                 for window_context in &self.window_contexts {
                     let _ = window_context
                         .game_thread_sender
-                        .as_ref()
-                        .unwrap()
                         .send(GameEvent::CursorMoved(delta))
                         .inspect_err(|e| {
                             println!("Failed to send cursor moved event to game thread: {:?}", e)
@@ -280,4 +277,12 @@ fn main() {
             err
         )
     });
+
+    for window_context in &mut app.window_contexts {
+        if let Some(handle) = window_context.game_thread_handle.take() {
+            if let Err(e) = handle.join() {
+                println!("Game thread exited with error: {:?}", e);
+            }
+        }
+    }
 }
