@@ -725,6 +725,13 @@ fn push_descriptor_set(
             ),
             _ => {}
         }
+
+        // Cleanup buffer
+        unsafe {
+            if let Err(e) = resources.remove_buffer(device_buffer) {
+                println!("Failed to remove GPU buffer. This is a memory leak! {e}")
+            };
+        }
     }
 
     // Construct a descriptor set from our device buffer
