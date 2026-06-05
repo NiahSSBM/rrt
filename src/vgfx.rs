@@ -323,8 +323,15 @@ impl WindowContext {
             if mesh.is_none() {
                 return; // No meshes are loaded
             }
-            
-            new_buffers.insert(*i, (mesh.unwrap().lock().unwrap().shader.clone(), buffer.1, buffer.2));
+
+            new_buffers.insert(
+                *i,
+                (
+                    mesh.unwrap().lock().unwrap().shader.clone(),
+                    buffer.1,
+                    buffer.2,
+                ),
+            );
         }
         self.scene_task.buffers = new_buffers;
 
@@ -464,8 +471,7 @@ fn create_taskgraph(
     let virtual_depthbuffer_id = task_graph.add_image(&get_depthimage_createinfo(viewport.clone()));
 
     // Send meshes to device and get back buffer IDs
-    let (scene_task, buffers) =
-        create_buffers(resources, queue.clone(), flight_id, meshes);
+    let (scene_task, buffers) = create_buffers(resources, queue.clone(), flight_id, meshes);
 
     // Assemble our scene
     let scene_node_id = task_graph

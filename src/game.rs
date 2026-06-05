@@ -290,7 +290,7 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
                         &state.camera.up,
                     )
                     .into(),
-                    Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+                    Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
                 ));
         }
     }

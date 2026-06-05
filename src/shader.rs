@@ -140,7 +140,7 @@ pub struct Shader {
     resources: Option<Arc<Resources>>,
     sampler: Option<Arc<Sampler>>,
     staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
-    image: Option<Id<Image>>,
+    texture: Option<Id<Image>>,
 }
 
 struct VGFXDescriptorSetLayout {
@@ -201,7 +201,7 @@ impl Shader {
             resources: None,
             sampler: None,
             staged_texture: None,
-            image: None,
+            texture: None,
         }
     }
 
@@ -214,11 +214,13 @@ impl Shader {
         texture: ImageBuffer<Rgba<u8>, Vec<u8>>,
         flight_id: Id<Flight>,
     ) -> (Id<Image>, Arc<Sampler>) {
-        let sampler = Sampler::new(
-            self.queue.clone().unwrap().device().clone(),
-            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-        )
-        .unwrap();
+        let sampler = self.sampler.clone().unwrap_or_else(|| {
+            Sampler::new(
+                self.queue.clone().unwrap().device().clone(),
+                SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+            )
+            .unwrap()
+        });
 
         // Create staging buffer
         let host_buffer = self
@@ -244,32 +246,33 @@ impl Shader {
             .unwrap();
 
         // Create final destination buffer
-        let device_buffer = self
-            .resources
-            .clone()
-            .unwrap()
-            .create_image(
-                ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format: Format::R8G8B8A8_SRGB,
-                    view_formats: vec![Format::R8G8B8A8_SRGB],
-                    extent: [texture.width(), texture.height(), 1],
-                    array_layers: 1,
-                    mip_levels: 1,
-                    samples: SampleCount::Sample1,
-                    tiling: ImageTiling::Linear,
-                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                    stencil_usage: None,
-                    sharing: Sharing::Exclusive,
-                    initial_layout: ImageLayout::Undefined,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        let device_buffer = self.texture.unwrap_or_else(|| {
+            self.resources
+                .clone()
+                .unwrap()
+                .create_image(
+                    ImageCreateInfo {
+                        image_type: ImageType::Dim2d,
+                        format: Format::R8G8B8A8_SRGB,
+                        view_formats: vec![Format::R8G8B8A8_SRGB],
+                        extent: [texture.width(), texture.height(), 1],
+                        array_layers: 1,
+                        mip_levels: 1,
+                        samples: SampleCount::Sample1,
+                        tiling: ImageTiling::Linear,
+                        usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                        stencil_usage: None,
+                        sharing: Sharing::Exclusive,
+                        initial_layout: ImageLayout::Undefined,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        });
 
         // Wait for GPU to finish flight
         self.resources
@@ -307,6 +310,15 @@ impl Shader {
         }
         .unwrap();
 
+        unsafe {
+            match self.resources.clone().unwrap().remove_buffer(host_buffer) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("Failed to remove temporary host buffer: {e}")
+                }
+            }
+        }
+
         (device_buffer, sampler)
         //self.image = Some(device_buffer);
     }
@@ -321,8 +333,9 @@ impl Shader {
 
         match self.staged_texture.clone() {
             Some(t) => {
-                self.load_texture(t, flight_id);
-                //self.raw_texture = self.staged_texture.clone();
+                let (texture, sampler) = self.load_texture(t, flight_id);
+                self.texture = Some(texture);
+                self.sampler = Some(sampler);
                 self.staged_texture = None;
             }
             None => {}
@@ -423,7 +436,8 @@ impl Shader {
                     let texture = get_shader_property(
                         AdditionalShaderProperties::texture_default(),
                         &self.additional_properties,
-                    ).unwrap_or_else(|| {
+                    )
+                    .unwrap_or_else(|| {
                         println!("No texture property on shader that requires a texture!");
                         &default_texture
                     });
@@ -438,11 +452,17 @@ impl Shader {
                                 2,
                                 match texture {
                                     AdditionalShaderProperties::Texture(t) => {
-                                        let (texture, sampler) =
-                                            self.load_texture(t.clone(), flight_id);
-                                        self.image = Some(texture);
-                                        self.sampler = Some(sampler.clone());
-                                        DescriptorData::Texture((texture, sampler, t.clone()))
+                                        if self.texture.is_none() | self.sampler.is_none() {
+                                            let (texture, sampler) =
+                                                self.load_texture(t.clone(), flight_id);
+                                            self.texture = Some(texture);
+                                            self.sampler = Some(sampler);
+                                        }
+                                        DescriptorData::Texture((
+                                            self.texture.unwrap(),
+                                            self.sampler.clone().unwrap(),
+                                            t.clone(),
+                                        ))
                                     }
                                     _ => panic!("This should never be reached"),
                                 },
@@ -692,31 +712,19 @@ fn push_descriptor_set(
             }
         }
 
-        // Write buffer to GPU
-        unsafe {
-            vulkano_taskgraph::execute(
-                &queue,
-                &resources,
-                flight_id,
-                |_cbf, tcx| {
-                    tcx.write_buffer::<[u8]>(device_buffer, ..)
-                        .unwrap()
-                        .copy_from_slice(
-                            match descriptor_set_with_data.data.get(binding).unwrap() {
-                                DescriptorData::Buffer(b) => b,
-                                DescriptorData::Texture(t) => t.2.as_raw(),
-                                DescriptorData::Sampler(s) => &[0; 4],
-                            },
-                        );
-
-                    Ok(())
-                },
+        match descriptor_set_with_data.data.get(binding).unwrap() {
+            DescriptorData::Buffer(data) => push_buffer(
+                queue.clone(),
+                resources.clone(),
+                data,
+                device_buffer,
                 host_buffer_accesses,
-                buffer_accesses,
                 image_accesses,
-            )
+                buffer_accesses,
+                flight_id,
+            ),
+            _ => {}
         }
-        .unwrap();
     }
 
     // Construct a descriptor set from our device buffer
@@ -735,6 +743,36 @@ fn push_descriptor_set(
     descriptor_sets.insert(0, DescriptorSetWithOffsets::new(descriptor_set.clone(), []));
 
     (pipeline_layout, descriptor_sets)
+}
+
+fn push_buffer(
+    queue: Arc<Queue>,
+    resources: Arc<Resources>,
+    data: &[u8],
+    buffer: Id<Buffer>,
+    host_buffer_accesses: Vec<(Id<Buffer>, HostAccessType)>,
+    image_accesses: Vec<(Id<Image>, AccessTypes, ImageLayoutType)>,
+    buffer_accesses: Vec<(Id<Buffer>, AccessTypes)>,
+    flight_id: Id<Flight>,
+) {
+    unsafe {
+        vulkano_taskgraph::execute(
+            &queue,
+            &resources,
+            flight_id,
+            |_cbf, tcx| {
+                tcx.write_buffer::<[u8]>(buffer, ..)
+                    .unwrap()
+                    .copy_from_slice(data);
+
+                Ok(())
+            },
+            host_buffer_accesses,
+            buffer_accesses,
+            image_accesses,
+        )
+    }
+    .unwrap_or_else(|e| panic!("Failed to push buffer to GPU: {e}"));
 }
 
 pub mod vs_default {
