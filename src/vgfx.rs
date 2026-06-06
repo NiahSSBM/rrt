@@ -574,11 +574,11 @@ fn create_temp_mesh(
 
     let model_verts: Vec<Vertex3D> =
         vec![Vertex3D::new([0.0, 0.0, 0.0], color::palette::css::BLACK)];
-    let model_indicies: Vec<usize> = vec![0, 1, 2];
+    let model_indicies: Vec<u32> = vec![0, 1, 2];
 
     Arc::new(Mutex::new(Mesh3D::new(
         model_verts.clone(),
-        model_indicies.iter().map(|i| i.clone() as u32).collect(),
+        model_indicies,
         tri_shaders.clone(),
     )))
 }

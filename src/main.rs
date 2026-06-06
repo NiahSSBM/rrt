@@ -22,7 +22,6 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::WindowId,
 };
-
 use crate::game::{GameData, GameEvent, RenderEvent};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
@@ -49,10 +48,7 @@ impl ApplicationHandler for App {
         for i in 0..1 {
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
-            let game_data = GameData {
-                to_render,
-                from_render,
-            };
+            let game_data = GameData::new(to_render, from_render);
 
             let handle = thread::spawn(|| {
                 game::game_main(game_data);

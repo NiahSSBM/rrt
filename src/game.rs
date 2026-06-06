@@ -60,11 +60,6 @@ enum GameStatus {
     Exit,
 }
 
-pub struct GameData {
-    pub to_render: mpsc::Sender<RenderEvent>,
-    pub from_render: mpsc::Receiver<GameEvent>,
-}
-
 struct Camera {
     perspective: [[[f32; 4]; 4]; 3],
     position: Point3<f32>,
@@ -76,12 +71,32 @@ struct Camera {
     pitch: f32,
 }
 
+pub struct GameData {
+    to_render: mpsc::Sender<RenderEvent>,
+    from_render: mpsc::Receiver<GameEvent>,
+    persistent_textures: Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+}
+
+impl GameData {
+    pub fn new(
+        to_render: mpsc::Sender<RenderEvent>,
+        from_render: mpsc::Receiver<GameEvent>,
+    ) -> Self {
+        Self {
+            to_render,
+            from_render,
+            persistent_textures: Vec::new(),
+        }
+    }
+}
+
 struct GameState {
     camera: Camera,
     objects: Vec<Object>,
     last_physics_update: Instant,
     delta: Duration,
     keys_held: Vec<KeyCode>,
+    frame_counter: u64,
 }
 
 impl GameState {
@@ -92,6 +107,7 @@ impl GameState {
             last_physics_update: Instant::now(),
             delta: Duration::ZERO,
             keys_held: Vec::new(),
+            frame_counter: 0,
         }
     }
 }
@@ -107,7 +123,7 @@ impl Camera {
                     &Vector3::new(0.0, 1.0, 0.0), // What axis is up
                 )
                 .into(),
-                Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
+                Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
             ],
             position: Point3::origin(),
             front: *Vector3::z_axis(),
@@ -120,23 +136,27 @@ impl Camera {
     }
 }
 
-fn game_init(data: &GameData, state: &mut GameState) {
+fn game_init(data: &mut GameData, state: &mut GameState) {
     // Load shaders
     let stage_pipeline = HashMap::from([
         (ShaderStage::Vertex, ShaderType::VertexDefault),
         (ShaderStage::Fragment, ShaderType::FragmentDefault),
     ]);
 
-    // Load STL model file
+    // Load STL model files
     let stl_paths = vec!["models/horse.stl", "models/pig.stl"];
-    let models = load_stls(stl_paths.clone());
+    let stl_models = load_stls(stl_paths.clone());
 
+    // Load GLTF model files
     let gltf_paths = vec!["models/scene.gltf"];
     let gltf_models = load_gltfs(gltf_paths);
 
-    // Assemble verticies into models
+    let texture_paths = vec!["textures/grid.png", "textures/texture.jpg"];
+    data.persistent_textures = load_images(texture_paths);
+
+    // Assemble vertices into models
     let mut i = 0;
-    for model in models {
+    for model in stl_models {
         let tri_shaders = Shader::new(
             stage_pipeline.clone(),
             vec![
@@ -145,11 +165,16 @@ fn game_init(data: &GameData, state: &mut GameState) {
                     state.camera.perspective[1],
                     state.camera.perspective[2],
                 ),
-                AdditionalShaderProperties::Texture(load_image("textures/texture.jpg").unwrap()),
+                AdditionalShaderProperties::Texture(
+                    data.persistent_textures
+                        .get(i % data.persistent_textures.len())
+                        .unwrap()
+                        .clone(),
+                ),
             ],
         );
         let mut model_verts: Vec<Vertex3D> = vec![];
-        let mut model_indices: Vec<usize> = vec![];
+        let mut model_indices: Vec<u32> = vec![];
 
         for vertex in model.vertices {
             let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
@@ -158,21 +183,16 @@ fn game_init(data: &GameData, state: &mut GameState) {
             model_verts.push(Vertex3D::new(vertex.into(), colors[rand as usize]));
         }
         for face in model.faces {
-            for tri_indices in face.vertices {
-                model_indices.push(tri_indices);
+            for vertex in face.vertices {
+                model_indices.push(vertex as u32);
             }
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
             model_verts.clone(),
-            model_indices.iter().map(|i| i.clone() as u32).collect(),
+            model_indices,
             tri_shaders,
         )));
-
-        //match load_image("textures/texture.jpg") {
-        //    Ok(i) => {mesh.lock().unwrap().shader.set_texture(i)},
-        //    Err(e) => println!("Could not load image: {:?}", e),
-        //};
 
         let mut object = Object::from_mesh(mesh.clone());
         object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));
@@ -212,9 +232,9 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
                 println!("Game thread exiting...");
                 return GameStatus::Exit;
             }
-            GameEvent::CursorMoved(cursor_delta) => {
-                x_delta += cursor_delta.0 as f32;
-                y_delta += cursor_delta.1 as f32;
+            GameEvent::CursorMoved((cursor_x_delta, cursor_y_delta)) => {
+                x_delta += cursor_x_delta as f32;
+                y_delta += cursor_y_delta as f32;
             }
             GameEvent::KeyEvent(event) => {
                 if event.state.is_pressed() && !event.repeat {
@@ -280,6 +300,25 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         if object.mesh.is_some() {
             // Skip empty objects
             let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
+
+            if state.frame_counter % 60 <= 30 {
+                mesh.shader.set_texture(
+                    data.persistent_textures
+                        .get(1)
+                        .unwrap()
+                        .clone(),
+                );
+            } else {
+                mesh.shader.set_texture(
+                    data.persistent_textures
+                        .get(
+                            (0),
+                        )
+                        .unwrap()
+                        .clone(),
+                );
+            }
+
             mesh.shader
                 .update_descriptor(AdditionalShaderProperties::Perspective(
                     object.transform.to_homogeneous().into(),
@@ -301,6 +340,7 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         println!("Failed to request task graph update: {e}");
     }
 
+    state.frame_counter += 1;
     GameStatus::Ok
 }
 
@@ -408,13 +448,27 @@ fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
     loaded_models
 }
 
+fn load_images(paths: Vec<&str>) -> Vec<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut loaded_images: Vec<ImageBuffer<Rgba<u8>, Vec<u8>>> = Vec::new();
+    for path in paths {
+        println!("Loading image {path}");
+        if let Ok(image) = load_image(path) {
+            loaded_images.push(image);
+        } else {
+            println!("Could not load image: {path}");
+            continue;
+        }
+    }
+    loaded_images
+}
+
 fn load_image(path: &str) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, ImageError> {
     Ok(open(path)?.to_rgba8())
 }
 
-pub fn game_main(data: GameData) {
+pub fn game_main(mut data: GameData) {
     let mut state = GameState::new();
-    game_init(&data, &mut state);
+    game_init(&mut data, &mut state);
 
     // Main loop
     loop {
