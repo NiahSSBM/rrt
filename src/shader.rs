@@ -210,7 +210,7 @@ impl Shader {
     }
 
     fn load_texture(
-        &self,
+        &mut self,
         texture: ImageBuffer<Rgba<u8>, Vec<u8>>,
         flight_id: Id<Flight>,
     ) -> (Id<Image>, Arc<Sampler>) {
@@ -244,6 +244,25 @@ impl Shader {
                 .unwrap(),
             )
             .unwrap();
+
+        if self.texture.is_some() {
+            if let Ok(image_state) = self.resources.clone().unwrap().image(self.texture.unwrap()) {
+                if image_state.image().extent()
+                    != [texture.width() as u32, texture.height() as u32, 1]
+                {
+                    // If there's a pre-existing texture buffer
+                    // AND that buffer has a different size than what we need now
+                    // Remove that buffer
+                    unsafe {
+                        self.resources
+                            .clone()
+                            .unwrap()
+                            .remove_image(self.texture.take().unwrap())
+                            .unwrap();
+                    }
+                }
+            }
+        }
 
         // Create final destination buffer
         let device_buffer = self.texture.unwrap_or_else(|| {
@@ -433,9 +452,10 @@ impl Shader {
                 ),
                 ShaderType::FragmentDefault => {
                     let default_texture = AdditionalShaderProperties::texture_default();
+                    let properties = self.additional_properties.clone(); // Probably an unnecessary clone
                     let texture = get_shader_property(
                         AdditionalShaderProperties::texture_default(),
-                        &self.additional_properties,
+                        &properties,
                     )
                     .unwrap_or_else(|| {
                         println!("No texture property on shader that requires a texture!");

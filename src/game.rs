@@ -302,21 +302,11 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
             let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
 
             if state.frame_counter % 60 <= 30 {
-                mesh.shader.set_texture(
-                    data.persistent_textures
-                        .get(1)
-                        .unwrap()
-                        .clone(),
-                );
+                mesh.shader
+                    .set_texture(data.persistent_textures.get(1).unwrap().clone());
             } else {
-                mesh.shader.set_texture(
-                    data.persistent_textures
-                        .get(
-                            (0),
-                        )
-                        .unwrap()
-                        .clone(),
-                );
+                mesh.shader
+                    .set_texture(data.persistent_textures.get(0).unwrap().clone());
             }
 
             mesh.shader
