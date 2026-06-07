@@ -89,8 +89,7 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-                        // Request redraw immediately
-                        window.request_redraw();
+
                         // Calculate framerate
                         let fs_lock = FRAMES_SINCE_LAST_FRAMETIME_UPDATE.try_lock();
                         match fs_lock {
@@ -166,6 +165,7 @@ impl ApplicationHandler for App {
                         }
 
                         window_context.redraw();
+                        window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
                         window_context.requested_resize = true;
