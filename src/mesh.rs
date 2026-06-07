@@ -1,6 +1,3 @@
-use vulkano::image::Image;
-use vulkano_taskgraph::Id;
-
 use crate::shader::{Shader, Vertex3D};
 
 #[derive(Clone)]

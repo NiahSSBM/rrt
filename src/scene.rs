@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap},
     slice,
     sync::{Arc, Mutex},
 };
@@ -9,7 +9,7 @@ use vulkano::{
     device::{Device, Queue},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
-        self, GraphicsPipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
+        GraphicsPipeline, PipelineBindPoint, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -24,7 +24,7 @@ use vulkano::{
     render_pass::Subpass,
     shader::ShaderStage,
 };
-use vulkano::{descriptor_set, pipeline::graphics::depth_stencil::CompareOp};
+use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano_taskgraph::{
     ClearValues, Id, Task, TaskContext, TaskResult,
     command_buffer::RecordingCommandBuffer,

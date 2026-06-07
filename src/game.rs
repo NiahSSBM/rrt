@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::fs::OpenOptions;
-use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -11,15 +10,12 @@ use std::vec;
 
 use color::AlphaColor;
 use color::palette::css;
-use gltf::Gltf;
 use image::ImageBuffer;
 use image::ImageError;
-use image::Rgb;
 use image::Rgba;
 use image::open;
 use nalgebra::Matrix4;
 use nalgebra::Point3;
-use nalgebra::Rotation;
 use nalgebra::Rotation3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
@@ -30,7 +26,6 @@ use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 
 use crate::mesh::Mesh3D;
-use crate::object;
 use crate::object::Object;
 use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
@@ -149,7 +144,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 
     // Load GLTF model files
     let gltf_paths = vec!["models/scene.gltf"];
-    let gltf_models = load_gltfs(gltf_paths);
+    let _gltf_models = load_gltfs(gltf_paths);
 
     let texture_paths = vec!["textures/grid.png", "textures/texture.jpg"];
     data.persistent_textures = load_images(texture_paths);
@@ -218,7 +213,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 }
 
 // Runs as quickly as possible
-fn update(data: &GameData, state: &mut GameState) -> GameStatus {
+fn update(_data: &GameData, _state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
@@ -291,11 +286,6 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
         }
     }
 
-    for object in &mut state.objects {
-        //object.translate(Vector3::new(0.0, 1.0, -2.0));
-        //object.rotate(Rotation3::new(Vector3::new(0.0, 0.0, 0.05)));
-    }
-
     for object in &state.objects {
         if object.mesh.is_some() {
             // Skip empty objects
@@ -337,7 +327,7 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
 fn load_gltfs(paths: Vec<&str>) {
     for path in paths {
         println!("Loading GLTF {}", path);
-        let (document, buffers, images) = match gltf::import(path) {
+        let (document, _buffers, _images) = match gltf::import(path) {
             Ok(g) => g,
             Err(e) => {
                 println!("Error opening GLTF file: {e}");

@@ -6,15 +6,12 @@ mod shader;
 mod vgfx;
 
 use crate::game::{GameData, GameEvent, RenderEvent};
-use std::f64::consts::E;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread, usize};
 use vgfx::WindowContext;
-use winit::dpi::PhysicalPosition;
 use winit::event::DeviceEvent;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::window::CursorGrabMode;
 use winit::{
@@ -45,7 +42,7 @@ impl ApplicationHandler for App {
             return;
         }
 
-        for i in 0..1 {
+        for _ in 0..1 {
             let (to_render, from_game) = mpsc::channel();
             let (to_game, from_render) = mpsc::channel();
             let game_data = GameData::new(to_render, from_render);
@@ -141,7 +138,7 @@ impl ApplicationHandler for App {
                         }
 
                         let resources = window_context.resources.clone();
-                        let flight = resources.flight(window_context.flight_id).unwrap();
+                        let _flight = resources.flight(window_context.flight_id).unwrap();
 
                         if window_context.requested_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
@@ -208,7 +205,7 @@ impl ApplicationHandler for App {
                         device_id: _device_id,
                         position,
                     } => {
-                        let cursor_delta = [
+                        let _cursor_delta = [
                             window_context.last_cursor_position.x - position.x,
                             window_context.last_cursor_position.y - position.y,
                         ];
@@ -223,8 +220,8 @@ impl ApplicationHandler for App {
 
     fn device_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        device_id: winit::event::DeviceId,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
         match event {

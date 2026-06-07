@@ -1,8 +1,6 @@
-use core::str;
 use std::sync::{Arc, Mutex};
 
-use image::{ImageBuffer, Rgb, open};
-use nalgebra::{Matrix3, Point3, Rotation3, Transform3, Vector3};
+use nalgebra::{Rotation3, Transform3, Vector3};
 
 use crate::mesh::Mesh3D;
 

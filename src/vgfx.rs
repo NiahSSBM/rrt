@@ -23,7 +23,7 @@ use vulkano::swapchain::{
     ColorSpace, FullScreenExclusive, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
 };
 use vulkano::sync::Sharing;
-use vulkano::{Validated, VulkanError, VulkanLibrary, swapchain};
+use vulkano::{Validated, VulkanError, VulkanLibrary};
 use vulkano_taskgraph::graph::{
     AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph,
 };
@@ -33,27 +33,12 @@ use vulkano_taskgraph::resource::{
 use vulkano_taskgraph::{Id, resource_map};
 use winit::dpi::PhysicalPosition;
 use winit::event_loop::ActiveEventLoop;
-use winit::platform::wayland::ActiveEventLoopExtWayland;
 use winit::window::Window;
 
 use crate::game::{GameEvent, RenderEvent};
 use crate::mesh::Mesh3D;
 use crate::scene::SceneTask;
 use crate::shader::Vertex3D;
-
-#[derive(Default, PartialEq)]
-pub enum Platform {
-    //ANDROID,
-    //IOS,
-    //MACOS,
-    //ORBITAL,
-    WAYLAND,
-    //WEB,
-    //WINDOWS,
-    X11,
-    #[default]
-    UNKNOWN,
-}
 
 pub struct WindowContext {
     pub window: Arc<Window>,
@@ -78,7 +63,6 @@ pub struct WindowContext {
     pub game_thread_receiver: Receiver<RenderEvent>,
     pub game_thread_sender: Sender<GameEvent>,
     pub last_cursor_position: PhysicalPosition<f64>,
-    pub platform: Platform,
 }
 
 impl WindowContext {
@@ -107,12 +91,6 @@ impl WindowContext {
             },
         )
         .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
-
-        // TODO: Figure out a better way to determine the platform
-        let platform = match event_loop.is_wayland() {
-            true => Platform::WAYLAND,
-            false => Platform::X11,
-        };
 
         // Create window
         let window = Arc::new(
@@ -219,7 +197,6 @@ impl WindowContext {
         );
 
         Self {
-            platform,
             window,
             task_graph,
             scene_node_id,

@@ -1,6 +1,6 @@
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
-use image::{ImageBuffer, Rgb, Rgba};
+use image::{ImageBuffer, Rgba};
 use nalgebra::Matrix4;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -30,7 +30,7 @@ use vulkano::{
     memory::{
         DeviceAlignment,
         allocator::{
-            AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
+            AllocationCreateInfo, DeviceLayout, MemoryTypeFilter,
         },
     },
     pipeline::PipelineLayout,
@@ -43,7 +43,6 @@ use vulkano_taskgraph::{
     resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
 
-use crate::shader::AdditionalShaderProperties::Texture;
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -694,7 +693,7 @@ fn push_descriptor_set(
                         )
                         .unwrap()
                     }
-                    DescriptorData::Sampler(s) => DeviceLayout::for_value(&0).unwrap(),
+                    DescriptorData::Sampler(_s) => DeviceLayout::for_value(&0).unwrap(),
                 },
             )
             .unwrap();
@@ -703,7 +702,7 @@ fn push_descriptor_set(
 
         let mut host_buffer_accesses = vec![];
         let mut image_accesses = vec![];
-        let mut buffer_accesses = vec![];
+        let buffer_accesses = vec![];
 
         match descriptor_set_with_data.data.get(binding).unwrap() {
             DescriptorData::Buffer(_) => {
@@ -815,7 +814,7 @@ pub mod vs_default {
 }
 
 pub mod fs_default {
-    use bytemuck::NoUninit;
+    
 
     vulkano_shaders::shader! {
         ty: "fragment",
