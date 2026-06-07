@@ -19,9 +19,11 @@ use vulkano::memory::allocator::{AllocationCreateInfo, StandardMemoryAllocator};
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::Framebuffer;
 use vulkano::shader::ShaderStage;
-use vulkano::swapchain::{ColorSpace, Surface, Swapchain, SwapchainCreateInfo};
+use vulkano::swapchain::{
+    ColorSpace, FullScreenExclusive, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+};
 use vulkano::sync::Sharing;
-use vulkano::{Validated, VulkanError, VulkanLibrary};
+use vulkano::{Validated, VulkanError, VulkanLibrary, swapchain};
 use vulkano_taskgraph::graph::{
     AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph,
 };
@@ -106,7 +108,7 @@ impl WindowContext {
         )
         .unwrap_or_else(|err| panic!("Failed to load Vulkan instance: {:?}", err));
 
-        // TODO: Figure out a better way to determin the platform
+        // TODO: Figure out a better way to determine the platform
         let platform = match event_loop.is_wayland() {
             true => Platform::WAYLAND,
             false => Platform::X11,
@@ -182,6 +184,7 @@ impl WindowContext {
                         .into_iter()
                         .next()
                         .unwrap(),
+                    present_mode: select_presentmode(device.clone(), &surface),
                     ..Default::default()
                 },
             )
@@ -432,6 +435,31 @@ fn get_depthimage_createinfo(viewport: Viewport) -> ImageCreateInfo {
         drm_format_modifier_plane_layouts: vec![],
         external_memory_handle_types: Default::default(),
         ..Default::default()
+    }
+}
+
+// Selects a present mode to use
+// Prefers Immediate mode if available, allowing the framerate to run uncapped
+// Falls back to FIFO otherwise, which is guaranteed to be supported
+//
+// Panics if the device and surface don't belong to the same Vulkan instance
+fn select_presentmode(device: Arc<Device>, surface: &Surface) -> PresentMode {
+    let surface_info = vulkano::swapchain::SurfaceInfo {
+        present_mode: None,
+        full_screen_exclusive: FullScreenExclusive::Default,
+        win32_monitor: None,
+        ..Default::default()
+    };
+
+    let supported_modes = device
+        .physical_device()
+        .surface_present_modes(surface, surface_info)
+        .unwrap_or_else(|e| panic!("No valid present modes could be determined: {e}"));
+
+    if supported_modes.contains(&PresentMode::Immediate) {
+        PresentMode::Immediate
+    } else {
+        PresentMode::Fifo
     }
 }
 

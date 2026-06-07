@@ -699,8 +699,7 @@ fn push_descriptor_set(
             )
             .unwrap();
 
-        // Wait for GPU to finish flight
-        resources.flight(flight_id).unwrap().wait(None).unwrap();
+
 
         let mut host_buffer_accesses = vec![];
         let mut image_accesses = vec![];
@@ -782,6 +781,9 @@ fn push_buffer(
     buffer_accesses: Vec<(Id<Buffer>, AccessTypes)>,
     flight_id: Id<Flight>,
 ) {
+    // Wait for GPU to finish flight
+    resources.flight(flight_id).unwrap().wait(None).unwrap();
+    
     unsafe {
         vulkano_taskgraph::execute(
             &queue,

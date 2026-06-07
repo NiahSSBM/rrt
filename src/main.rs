@@ -5,6 +5,7 @@ mod scene;
 mod shader;
 mod vgfx;
 
+use crate::game::{GameData, GameEvent, RenderEvent};
 use std::f64::consts::E;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -22,7 +23,6 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::WindowId,
 };
-use crate::game::{GameData, GameEvent, RenderEvent};
 
 static FRAMES_SINCE_LAST_FRAMETIME_UPDATE: Mutex<i32> = Mutex::new(0);
 static TIME_SINCE_LAST_FRAMETIME_UPDATE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -77,14 +77,20 @@ impl ApplicationHandler for App {
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("The close button was pressed; stopping");
-                        let _ = window_context
+                        if let Err(e) = window_context
                             .game_thread_sender
                             .send(game::GameEvent::GameClose)
-                            .inspect_err(|e|println!(
-                                "Failed to send game close event to render thread, closing anyway... {:?}", e));
+                        {
+                            println!(
+                                "Failed to send game close event to render thread, closing anyway... {:?}",
+                                e
+                            );
+                        }
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
+                        // Request redraw immediately
+                        window.request_redraw();
                         // Calculate framerate
                         let fs_lock = FRAMES_SINCE_LAST_FRAMETIME_UPDATE.try_lock();
                         match fs_lock {
@@ -116,9 +122,7 @@ impl ApplicationHandler for App {
                         let mut should_update_shaders = false;
 
                         // Get one event sent from game thread
-                        let event = window_context
-                            .game_thread_receiver
-                            .try_recv();
+                        let event = window_context.game_thread_receiver.try_recv();
                         match event {
                             Ok(e) => match e {
                                 RenderEvent::AddMesh(mesh) => {
@@ -150,7 +154,7 @@ impl ApplicationHandler for App {
                             }
                         }
 
-                        // Runs if verticies are changed or if shaders or perspective is updated
+                        // Runs if vertices are changed or if shaders or perspective is updated
                         if should_update_buffers {
                             window_context.recreate_buffers();
                         }
@@ -162,8 +166,6 @@ impl ApplicationHandler for App {
                         }
 
                         window_context.redraw();
-                        flight.wait(None).unwrap();
-                        window.request_redraw();
                     }
                     WindowEvent::Resized(_size) => {
                         window_context.requested_resize = true;
