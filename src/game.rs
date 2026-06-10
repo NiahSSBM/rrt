@@ -10,6 +10,10 @@ use std::vec;
 
 use color::AlphaColor;
 use color::palette::css;
+use gltf::accessor::DataType;
+use gltf::mesh::Mode;
+use gltf::mesh::iter::Primitives;
+use gltf::{Document, Primitive};
 use image::ImageBuffer;
 use image::ImageError;
 use image::Rgba;
@@ -27,10 +31,10 @@ use winit::keyboard::PhysicalKey;
 
 use crate::mesh::Mesh3D;
 use crate::object::Object;
-use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 use crate::shader::Vertex3D;
+use crate::shader::{AdditionalShaderProperties, Vertex2D};
 
 const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
 const MOUSE_SENSITIVITY: f32 = 0.05;
@@ -143,11 +147,53 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     let stl_models = load_stls(stl_paths.clone());
 
     // Load GLTF model files
-    let gltf_paths = vec!["models/scene.gltf"];
-    let _gltf_models = load_gltfs(gltf_paths);
+    let gltf_paths = vec!["models/cube.glb"];
+    let gltf_models = load_gltfs(gltf_paths);
 
     let texture_paths = vec!["textures/grid.png", "textures/texture.jpg"];
     data.persistent_textures = load_images(texture_paths);
+
+    let mut i = 0;
+    for vert in gltf_models {
+        let tri_shaders = Shader::new(
+            stage_pipeline.clone(),
+            vec![
+                AdditionalShaderProperties::Perspective(
+                    state.camera.perspective[0],
+                    state.camera.perspective[1],
+                    state.camera.perspective[2],
+                ),
+                AdditionalShaderProperties::Texture(
+                    data.persistent_textures
+                        .get(i % data.persistent_textures.len())
+                        .unwrap()
+                        .clone(),
+                ),
+            ],
+        );
+        let mut model_verts: Vec<Vertex3D> = vec![];
+        let mut model_indices: Vec<u32> = vec![];
+
+
+        model_verts.push(Vertex3D::new(vert.clone().try_into().unwrap(), css::RED));
+        for point in 0..vert.len() {
+                model_indices.push(point as u32);
+        }
+
+        let mesh = Arc::new(Mutex::new(Mesh3D::new(
+            model_verts.clone(),
+            model_indices,
+            tri_shaders,
+        )));
+
+        let mut object = Object::from_mesh(mesh.clone());
+        object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));
+        object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
+        object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
+
+        //state.objects.push(object);
+        i += 3;
+    }
 
     // Assemble vertices into models
     let mut i = 0;
@@ -324,10 +370,11 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
-fn load_gltfs(paths: Vec<&str>) {
+fn load_gltfs(paths: Vec<&str>) -> Vec<Vec<f32>> {
+    let mut out = Vec::new();
     for path in paths {
         println!("Loading GLTF {}", path);
-        let (document, _buffers, _images) = match gltf::import(path) {
+        let (document, buffers, _images) = match gltf::import(path) {
             Ok(g) => g,
             Err(e) => {
                 println!("Error opening GLTF file: {e}");
@@ -346,52 +393,188 @@ fn load_gltfs(paths: Vec<&str>) {
                 walk_gltf_nodes(&node, 0);
             }
         }
+
+        out = get_gltf_vertices(document, buffers);
     }
+    out
 }
 
-fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
-    for node in node.children() {
-        println!(
-            "{:width$}Loaded Node {} with {} child nodes",
-            "",
-            node.name().unwrap_or("[unnammed node]"),
-            node.children().len(),
-            width = depth
-        );
-        if let Some(mesh) = node.mesh() {
-            println!(
-                "{:width$}Loaded Mesh {} with {} primitives",
-                "",
-                mesh.name().unwrap_or("[unnammed mesh]"),
-                mesh.primitives().len(),
-                width = depth
-            );
-            for primitive in mesh.primitives() {
-                println!(
-                    "{:width$}Loaded {:?} primitive",
-                    "",
-                    primitive.mode(),
-                    width = depth + 1
-                );
-                if let Some(indices) = primitive.indices() {
-                    println!(
-                        "{:width$}Primitive contains {} indices and {} attributes",
-                        "",
-                        indices.count(),
-                        primitive.attributes().count(),
-                        width = depth + 2
-                    );
+fn get_gltf_vertices(document: Document, buffers: Vec<gltf::buffer::Data>) -> Vec<Vec<f32>> {
+    let mut vertices: Vec<Vec<f32>> = Vec::new();
+    let mut buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
+
+    // Get vertex accessors
+    let mut accessors = Vec::new();
+    for scene in document.scenes() {
+        for node in scene.nodes() {
+            accessors.append(&mut get_gltf_vertex_accessors(&node));
+        }
+    }
+
+    for accessor in accessors {
+        println!("JSON index: {}", accessor.index());
+        println!("Size of components: {}", accessor.size());
+        println!("View offset: {:?}", accessor.view().unwrap().offset());
+        println!("Offset: {:?}", accessor.offset());
+        println!("Count: {}", accessor.count());
+        println!("Data type: {:?}", accessor.data_type());
+        println!("Is sparse: {:?}", accessor.sparse().is_some());
+        println!("Dimensions: {:?}", accessor.dimensions());
+
+        let mut i8_data: Vec<i8> = Vec::new();
+        let mut u8_data: Vec<u8> = Vec::new();
+        let mut i16_data: Vec<i16> = Vec::new();
+        let mut u16_data: Vec<u16> = Vec::new();
+        let mut u32_data: Vec<u32> = Vec::new();
+        let mut f32_data: Vec<f32> = Vec::new();
+
+        if let Some(view) = accessor.view() {
+            match accessor.data_type() {
+                DataType::I8 => {
+                    let bytes = buffer.as_chunks::<1>().0;
+                    for byte in bytes {
+                        i8_data.push(i8::from_le_bytes(*byte));
+                    }
+                }
+                DataType::U8 => {
+                    let bytes = buffer.as_chunks::<1>().0;
+                    for byte in bytes {
+                        u8_data.push(u8::from_le_bytes(*byte));
+                    }
+                }
+                DataType::I16 => {
+                    let bytes = buffer.as_chunks::<2>().0;
+                    for byte in bytes {
+                        i16_data.push(i16::from_le_bytes(*byte));
+                    }
+                }
+                DataType::U16 => {
+                    let bytes = buffer.as_chunks::<2>().0;
+                    for byte in bytes {
+                        u16_data.push(u16::from_le_bytes(*byte));
+                    }
+                }
+                DataType::U32 => {
+                    let bytes = buffer.as_chunks::<4>().0;
+                    for byte in bytes {
+                        u32_data.push(u32::from_le_bytes(*byte));
+                    }
+                }
+                DataType::F32 => {
+                    let bytes = buffer.as_chunks::<4>().0;
+                    for byte in bytes {
+                        f32_data.push(f32::from_le_bytes(*byte));
+                    }
                 }
             }
         }
-        if let Some(camera) = node.camera() {
-            println!(
-                "{:width$}Loaded Camera {}",
-                "",
-                camera.name().unwrap_or("[unnammed camera]"),
-                width = depth
-            );
+
+        vertices = f32_data.as_chunks::<3>().0.iter().map(|d| d.to_vec()).collect();
+        println!("i8_data: {:?}", i8_data);
+        println!("u8_data: {:?}", u8_data);
+        println!("i16_data: {:?}", i16_data);
+        println!("u16_data: {:?}", u16_data);
+        println!("u32_data: {:?}", u32_data);
+        println!("f32_data: {:?}", f32_data);
+
+    }
+    vertices
+}
+
+fn get_gltf_vertex_accessors<'a>(node: &gltf::Node<'a>) -> Vec<gltf::Accessor<'a>> {
+    let mut accessors = Vec::new();
+    if let Some(mesh) = node.mesh() {
+        for primitive in mesh.primitives() {
+            for (semantic, accessor) in primitive.attributes() {
+                if semantic == gltf::Semantic::Positions {
+                    accessors.push(accessor);
+                }
+            }
         }
+    }
+    accessors
+}
+
+fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
+    println!(
+        "{:width$}Loaded Node {} with {} child nodes",
+        "",
+        node.name().unwrap_or("[unnammed node]"),
+        node.children().len(),
+        width = depth
+    );
+    if let Some(mesh) = node.mesh() {
+        println!(
+            "{:width$}Loaded Mesh {} with {} primitives",
+            "",
+            mesh.name().unwrap_or("[unnammed mesh]"),
+            mesh.primitives().len(),
+            width = depth + 1
+        );
+        // Primitives are assumed to be triangles
+        // Unsure how this behaves if they are any other type
+        for primitive in mesh.primitives() {
+            let mut index_count = 0;
+            if let Some(indices) = primitive.indices() {
+                index_count = indices.count()
+            }
+            println!(
+                "{:width$}Loaded {:?} primitive with {} attributes and {} indices",
+                "",
+                primitive.mode(),
+                primitive.attributes().len(),
+                index_count,
+                width = depth + 2
+            );
+            for (semantic, accessor) in primitive.attributes() {
+                println!(
+                    "{:width$}Loaded semantic {:?}",
+                    "",
+                    semantic,
+                    width = depth + 3
+                );
+                println!(
+                    "{:width$}Loaded accessor {}",
+                    "",
+                    accessor.name().unwrap_or("[unnammed accessor]"),
+                    width = depth + 3
+                );
+                println!(
+                    "{:width$}Accessor offset {}",
+                    "",
+                    accessor.offset(),
+                    width = depth + 3
+                );
+                println!(
+                    "{:width$}Accessor data type {:?}",
+                    "",
+                    accessor.data_type(),
+                    width = depth + 3
+                );
+                println!(
+                    "{:width$}Accessor component size {}",
+                    "",
+                    accessor.size(),
+                    width = depth + 3
+                );
+                println!(
+                    "{:width$}Accessor count {}",
+                    "",
+                    accessor.count(),
+                    width = depth + 3
+                );
+            }
+        }
+    }
+    if let Some(camera) = node.camera() {
+        println!(
+            "{:width$}Loaded Camera {}",
+            "",
+            camera.name().unwrap_or("[unnammed camera]"),
+            width = depth
+        );
+    }
+    for node in node.children() {
         walk_gltf_nodes(&node, depth + 1);
     }
 }
