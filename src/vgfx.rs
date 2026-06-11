@@ -36,7 +36,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use crate::game::{GameEvent, RenderEvent};
-use crate::mesh::Mesh3D;
+use crate::mesh::{Mesh3D, Triangle};
 use crate::scene::SceneTask;
 use crate::shader::Vertex3D;
 
@@ -579,11 +579,11 @@ fn create_temp_mesh(
 
     let model_verts: Vec<Vertex3D> =
         vec![Vertex3D::new([0.0, 0.0, 0.0], color::palette::css::BLACK)];
-    let model_indicies: Vec<u32> = vec![0, 1, 2];
+    let triangle: Vec<Triangle> = vec![Triangle::new([1, 2, 3], [0.0, 0.0, 0.0])];
 
     Arc::new(Mutex::new(Mesh3D::new(
         model_verts.clone(),
-        model_indicies,
+        triangle,
         tri_shaders.clone(),
     )))
 }

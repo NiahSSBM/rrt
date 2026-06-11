@@ -10,10 +10,7 @@ use std::vec;
 
 use color::AlphaColor;
 use color::palette::css;
-use gltf::accessor::DataType;
-use gltf::mesh::Mode;
-use gltf::mesh::iter::Primitives;
-use gltf::{Document, Primitive};
+use gltf::buffer::Data;
 use image::ImageBuffer;
 use image::ImageError;
 use image::Rgba;
@@ -29,7 +26,7 @@ use winit::event::KeyEvent;
 use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 
-use crate::mesh::Mesh3D;
+use crate::mesh::{Mesh3D, Triangle};
 use crate::object::Object;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
@@ -154,7 +151,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     data.persistent_textures = load_images(texture_paths);
 
     let mut i = 0;
-    for vert in gltf_models {
+    for (vertices, indices) in gltf_models {
         let tri_shaders = Shader::new(
             stage_pipeline.clone(),
             vec![
@@ -172,17 +169,21 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             ],
         );
         let mut model_verts: Vec<Vertex3D> = vec![];
-        let mut model_indices: Vec<u32> = vec![];
+        let mut model_tris: Vec<Triangle> = vec![];
 
+        let verts = vertices.as_chunks::<3>().0;
+        let indices = indices.as_chunks::<3>().0;
+        for index in indices {
+            model_tris.push(Triangle::new(index.map(|f| f.into()), [0.0, 0.0, 0.0]));
+        }
 
-        model_verts.push(Vertex3D::new(vert.clone().try_into().unwrap(), css::RED));
-        for point in 0..vert.len() {
-                model_indices.push(point as u32);
+        for vert in verts {
+            model_verts.push(Vertex3D::new(vert.clone(), css::RED));
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
             model_verts.clone(),
-            model_indices,
+            model_tris,
             tri_shaders,
         )));
 
@@ -191,7 +192,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
-        //state.objects.push(object);
+        state.objects.push(object);
         i += 3;
     }
 
@@ -215,7 +216,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             ],
         );
         let mut model_verts: Vec<Vertex3D> = vec![];
-        let mut model_indices: Vec<u32> = vec![];
+        let mut model_tris: Vec<Triangle> = vec![];
 
         for vertex in model.vertices {
             let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
@@ -223,15 +224,17 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 
             model_verts.push(Vertex3D::new(vertex.into(), colors[rand as usize]));
         }
+
         for face in model.faces {
-            for vertex in face.vertices {
-                model_indices.push(vertex as u32);
-            }
+            model_tris.push(Triangle::new(
+                face.vertices.map(|v| v.clone() as u32),
+                [0.0, 0.0, 0.0],
+            ));
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
             model_verts.clone(),
-            model_indices,
+            model_tris,
             tri_shaders,
         )));
 
@@ -240,7 +243,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
-        state.objects.push(object);
+        //state.objects.push(object);
         i += 3;
     }
 
@@ -337,13 +340,15 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
             // Skip empty objects
             let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
 
-            if state.frame_counter % 60 <= 30 {
-                mesh.shader
-                    .set_texture(data.persistent_textures.get(1).unwrap().clone());
-            } else {
-                mesh.shader
-                    .set_texture(data.persistent_textures.get(0).unwrap().clone());
-            }
+            mesh.shader
+                .set_texture(data.persistent_textures.get(0).unwrap().clone());
+            // if state.frame_counter % 60 <= 30 {
+            //     mesh.shader
+            //         .set_texture(data.persistent_textures.get(1).unwrap().clone());
+            // } else {
+            //     mesh.shader
+            //         .set_texture(data.persistent_textures.get(0).unwrap().clone());
+            // }
 
             mesh.shader
                 .update_descriptor(AdditionalShaderProperties::Perspective(
@@ -370,8 +375,8 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
-fn load_gltfs(paths: Vec<&str>) -> Vec<Vec<f32>> {
-    let mut out = Vec::new();
+fn load_gltfs(paths: Vec<&str>) -> Vec<(Vec<f32>, Vec<u16>)> {
+    let mut out: Vec<(Vec<f32>, Vec<u16>)> = Vec::new();
     for path in paths {
         println!("Loading GLTF {}", path);
         let (document, buffers, _images) = match gltf::import(path) {
@@ -394,33 +399,29 @@ fn load_gltfs(paths: Vec<&str>) -> Vec<Vec<f32>> {
             }
         }
 
-        out = get_gltf_vertices(document, buffers);
+        out.push(get_gltf_vertices(document, buffers));
     }
     out
 }
 
-fn get_gltf_vertices(document: Document, buffers: Vec<gltf::buffer::Data>) -> Vec<Vec<f32>> {
-    let mut vertices: Vec<Vec<f32>> = Vec::new();
-    let mut buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
+fn get_gltf_vertices(document: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> (Vec<f32>, Vec<u16>) {
+    let mut vertices: Vec<f32> = Vec::new();
+    let mut indices: Vec<u16> = Vec::new();
+    let buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
 
     // Get vertex accessors
-    let mut accessors = Vec::new();
-    for scene in document.scenes() {
-        for node in scene.nodes() {
-            accessors.append(&mut get_gltf_vertex_accessors(&node));
-        }
-    }
+    let vertex_accessors = get_gltf_accessors(&document, gltf::Semantic::Positions);
 
-    for accessor in accessors {
-        println!("JSON index: {}", accessor.index());
-        println!("Size of components: {}", accessor.size());
-        println!("View offset: {:?}", accessor.view().unwrap().offset());
-        println!("Offset: {:?}", accessor.offset());
-        println!("Count: {}", accessor.count());
-        println!("Data type: {:?}", accessor.data_type());
-        println!("Is sparse: {:?}", accessor.sparse().is_some());
-        println!("Dimensions: {:?}", accessor.dimensions());
+    // Get normal accessors
+    let normal_accessors = get_gltf_accessors(&document, gltf::Semantic::Normals);
 
+    // Get normal accessors
+    let tex_accessors = get_gltf_accessors(&document, gltf::Semantic::TexCoords(0));
+
+    // Get index accessors
+    let index_accessors = get_gltf_index_accessors(&document);
+
+    for accessor in vertex_accessors {
         let mut i8_data: Vec<i8> = Vec::new();
         let mut u8_data: Vec<u8> = Vec::new();
         let mut i16_data: Vec<i16> = Vec::new();
@@ -430,63 +431,289 @@ fn get_gltf_vertices(document: Document, buffers: Vec<gltf::buffer::Data>) -> Ve
 
         if let Some(view) = accessor.view() {
             match accessor.data_type() {
-                DataType::I8 => {
-                    let bytes = buffer.as_chunks::<1>().0;
-                    for byte in bytes {
-                        i8_data.push(i8::from_le_bytes(*byte));
-                    }
+                gltf::accessor::DataType::I8 => {
+                    i8_data = gltf_load_i8(&accessor, &buffer);
                 }
-                DataType::U8 => {
-                    let bytes = buffer.as_chunks::<1>().0;
-                    for byte in bytes {
-                        u8_data.push(u8::from_le_bytes(*byte));
-                    }
+                gltf::accessor::DataType::U8 => {
+                    u8_data = gltf_load_u8(&accessor, &buffer);
                 }
-                DataType::I16 => {
-                    let bytes = buffer.as_chunks::<2>().0;
-                    for byte in bytes {
-                        i16_data.push(i16::from_le_bytes(*byte));
-                    }
+                gltf::accessor::DataType::I16 => {
+                    i16_data = gltf_load_i16(&accessor, &buffer);
                 }
-                DataType::U16 => {
-                    let bytes = buffer.as_chunks::<2>().0;
-                    for byte in bytes {
-                        u16_data.push(u16::from_le_bytes(*byte));
-                    }
+                gltf::accessor::DataType::U16 => {
+                    u16_data = gltf_load_u16(&accessor, &buffer);
                 }
-                DataType::U32 => {
-                    let bytes = buffer.as_chunks::<4>().0;
-                    for byte in bytes {
-                        u32_data.push(u32::from_le_bytes(*byte));
-                    }
+                gltf::accessor::DataType::U32 => {
+                    u32_data = gltf_load_u32(&accessor, &buffer);
                 }
-                DataType::F32 => {
-                    let bytes = buffer.as_chunks::<4>().0;
-                    for byte in bytes {
-                        f32_data.push(f32::from_le_bytes(*byte));
+                gltf::accessor::DataType::F32 => {
+                    f32_data = gltf_load_f32(&accessor, &buffer);
+                }
+            }
+
+            println!("i8 count: {}", i8_data.len());
+            println!("u8 count: {}", u8_data.len());
+            println!("i16 count: {}", i16_data.len());
+            println!("u16 count: {}", u16_data.len());
+            println!("u32 count: {}", u32_data.len());
+            println!("f32 count: {}", f32_data.len());
+
+            println!("i8_data: {:?}", i8_data);
+            println!("u8_data: {:?}", u8_data);
+            println!("i16_data: {:?}", i16_data);
+            println!("u16_data: {:?}", u16_data);
+            println!("u32_data: {:?}", u32_data);
+            println!("f32_data: {:?}", f32_data);
+
+            vertices = f32_data;
+        }
+    }
+    for accessor in normal_accessors {
+        let mut i8_data: Vec<i8> = Vec::new();
+        let mut u8_data: Vec<u8> = Vec::new();
+        let mut i16_data: Vec<i16> = Vec::new();
+        let mut u16_data: Vec<u16> = Vec::new();
+        let mut u32_data: Vec<u32> = Vec::new();
+        let mut f32_data: Vec<f32> = Vec::new();
+
+        if let Some(view) = accessor.view() {
+            match accessor.data_type() {
+                gltf::accessor::DataType::I8 => {
+                    i8_data = gltf_load_i8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U8 => {
+                    u8_data = gltf_load_u8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::I16 => {
+                    i16_data = gltf_load_i16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U16 => {
+                    u16_data = gltf_load_u16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U32 => {
+                    u32_data = gltf_load_u32(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::F32 => {
+                    f32_data = gltf_load_f32(&accessor, &buffer);
+                }
+            }
+
+            println!("i8 count: {}", i8_data.len());
+            println!("u8 count: {}", u8_data.len());
+            println!("i16 count: {}", i16_data.len());
+            println!("u16 count: {}", u16_data.len());
+            println!("u32 count: {}", u32_data.len());
+            println!("f32 count: {}", f32_data.len());
+
+            println!("i8_data: {:?}", i8_data);
+            println!("u8_data: {:?}", u8_data);
+            println!("i16_data: {:?}", i16_data);
+            println!("u16_data: {:?}", u16_data);
+            println!("u32_data: {:?}", u32_data);
+            println!("f32_data: {:?}", f32_data);
+
+        }
+    }
+    for accessor in tex_accessors {
+        let mut i8_data: Vec<i8> = Vec::new();
+        let mut u8_data: Vec<u8> = Vec::new();
+        let mut i16_data: Vec<i16> = Vec::new();
+        let mut u16_data: Vec<u16> = Vec::new();
+        let mut u32_data: Vec<u32> = Vec::new();
+        let mut f32_data: Vec<f32> = Vec::new();
+
+        if let Some(view) = accessor.view() {
+            match accessor.data_type() {
+                gltf::accessor::DataType::I8 => {
+                    i8_data = gltf_load_i8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U8 => {
+                    u8_data = gltf_load_u8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::I16 => {
+                    i16_data = gltf_load_i16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U16 => {
+                    u16_data = gltf_load_u16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U32 => {
+                    u32_data = gltf_load_u32(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::F32 => {
+                    f32_data = gltf_load_f32(&accessor, &buffer);
+                }
+            }
+
+            println!("i8 count: {}", i8_data.len());
+            println!("u8 count: {}", u8_data.len());
+            println!("i16 count: {}", i16_data.len());
+            println!("u16 count: {}", u16_data.len());
+            println!("u32 count: {}", u32_data.len());
+            println!("f32 count: {}", f32_data.len());
+
+            println!("i8_data: {:?}", i8_data);
+            println!("u8_data: {:?}", u8_data);
+            println!("i16_data: {:?}", i16_data);
+            println!("u16_data: {:?}", u16_data);
+            println!("u32_data: {:?}", u32_data);
+            println!("f32_data: {:?}", f32_data);
+
+        }
+    }
+
+    for accessor in index_accessors {
+        let mut i8_data: Vec<i8> = Vec::new();
+        let mut u8_data: Vec<u8> = Vec::new();
+        let mut i16_data: Vec<i16> = Vec::new();
+        let mut u16_data: Vec<u16> = Vec::new();
+        let mut u32_data: Vec<u32> = Vec::new();
+        let mut f32_data: Vec<f32> = Vec::new();
+
+        if let Some(view) = accessor.view() {
+            match accessor.data_type() {
+                gltf::accessor::DataType::I8 => {
+                    i8_data = gltf_load_i8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U8 => {
+                    u8_data = gltf_load_u8(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::I16 => {
+                    i16_data = gltf_load_i16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U16 => {
+                    u16_data = gltf_load_u16(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::U32 => {
+                    u32_data = gltf_load_u32(&accessor, &buffer);
+                }
+                gltf::accessor::DataType::F32 => {
+                    f32_data = gltf_load_f32(&accessor, &buffer);
+                }
+            }
+
+            println!("i8 count: {}", i8_data.len());
+            println!("u8 count: {}", u8_data.len());
+            println!("i16 count: {}", i16_data.len());
+            println!("u16 count: {}", u16_data.len());
+            println!("u32 count: {}", u32_data.len());
+            println!("f32 count: {}", f32_data.len());
+
+            println!("i8_data: {:?}", i8_data);
+            println!("u8_data: {:?}", u8_data);
+            println!("i16_data: {:?}", i16_data);
+            println!("u16_data: {:?}", u16_data);
+            println!("u32_data: {:?}", u32_data);
+            println!("f32_data: {:?}", f32_data);
+
+            indices = u16_data;
+        }
+    }
+    (vertices, indices)
+}
+
+fn gltf_load_i8(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<i8> {
+    let mut out: Vec<i8> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<1>()
+            .0;
+        for byte in bytes {
+            out.push(i8::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn gltf_load_u8(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<1>()
+            .0;
+        for byte in bytes {
+            out.push(u8::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn gltf_load_i16(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<i16> {
+    let mut out: Vec<i16> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<2>()
+            .0;
+        for byte in bytes {
+            out.push(i16::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn gltf_load_u16(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<2>()
+            .0;
+        for byte in bytes {
+            out.push(u16::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn gltf_load_u32(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<4>()
+            .0;
+        for byte in bytes {
+            out.push(u32::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn gltf_load_f32(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<f32> {
+    let mut out: Vec<f32> = Vec::new();
+    if let Some(view) = accessor.view() {
+        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
+            .as_chunks::<4>()
+            .0;
+        for byte in bytes {
+            out.push(f32::from_le_bytes(*byte));
+        }
+    }
+    out
+}
+
+fn get_gltf_accessors(
+    document: &gltf::Document,
+    desired_semantic: gltf::Semantic,
+) -> Vec<gltf::Accessor> {
+    let mut accessors = Vec::new();
+    for node in document.nodes() {
+        if let Some(mesh) = node.mesh() {
+            for primitive in mesh.primitives() {
+                for (semantic, accessor) in primitive.attributes() {
+                    if semantic == desired_semantic {
+                        accessors.push(accessor);
                     }
                 }
             }
         }
-
-        vertices = f32_data.as_chunks::<3>().0.iter().map(|d| d.to_vec()).collect();
-        println!("i8_data: {:?}", i8_data);
-        println!("u8_data: {:?}", u8_data);
-        println!("i16_data: {:?}", i16_data);
-        println!("u16_data: {:?}", u16_data);
-        println!("u32_data: {:?}", u32_data);
-        println!("f32_data: {:?}", f32_data);
-
     }
-    vertices
+    accessors
 }
 
-fn get_gltf_vertex_accessors<'a>(node: &gltf::Node<'a>) -> Vec<gltf::Accessor<'a>> {
+fn get_gltf_index_accessors(document: &gltf::Document) -> Vec<gltf::Accessor> {
     let mut accessors = Vec::new();
-    if let Some(mesh) = node.mesh() {
-        for primitive in mesh.primitives() {
-            for (semantic, accessor) in primitive.attributes() {
-                if semantic == gltf::Semantic::Positions {
+    for node in document.nodes() {
+        if let Some(mesh) = node.mesh() {
+            for primitive in mesh.primitives() {
+                if let Some(accessor) = primitive.indices() {
                     accessors.push(accessor);
                 }
             }
@@ -514,18 +741,24 @@ fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
         // Primitives are assumed to be triangles
         // Unsure how this behaves if they are any other type
         for primitive in mesh.primitives() {
-            let mut index_count = 0;
-            if let Some(indices) = primitive.indices() {
-                index_count = indices.count()
-            }
             println!(
-                "{:width$}Loaded {:?} primitive with {} attributes and {} indices",
+                "{:width$}Loaded {:?} primitive with {} attributes",
                 "",
                 primitive.mode(),
                 primitive.attributes().len(),
-                index_count,
                 width = depth + 2
             );
+
+            if let Some(accessor) = primitive.indices() {
+                println!(
+                    "{:width$}Loaded index accessor with {} indices",
+                    "",
+                    accessor.count(),
+                    width = depth + 3
+                );
+                print_accessor(&accessor, depth + 3)
+            }
+
             for (semantic, accessor) in primitive.attributes() {
                 println!(
                     "{:width$}Loaded semantic {:?}",
@@ -533,36 +766,7 @@ fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
                     semantic,
                     width = depth + 3
                 );
-                println!(
-                    "{:width$}Loaded accessor {}",
-                    "",
-                    accessor.name().unwrap_or("[unnammed accessor]"),
-                    width = depth + 3
-                );
-                println!(
-                    "{:width$}Accessor offset {}",
-                    "",
-                    accessor.offset(),
-                    width = depth + 3
-                );
-                println!(
-                    "{:width$}Accessor data type {:?}",
-                    "",
-                    accessor.data_type(),
-                    width = depth + 3
-                );
-                println!(
-                    "{:width$}Accessor component size {}",
-                    "",
-                    accessor.size(),
-                    width = depth + 3
-                );
-                println!(
-                    "{:width$}Accessor count {}",
-                    "",
-                    accessor.count(),
-                    width = depth + 3
-                );
+                print_accessor(&accessor, depth + 3);
             }
         }
     }
@@ -577,6 +781,51 @@ fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
     for node in node.children() {
         walk_gltf_nodes(&node, depth + 1);
     }
+}
+
+fn print_accessor(accessor: &gltf::Accessor, depth: usize) {
+    println!(
+        "{:width$}Loaded accessor {}",
+        "",
+        accessor.name().unwrap_or("[unnammed accessor]"),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor view offset {}",
+        "",
+        accessor.view().unwrap().offset(),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor view size {}",
+        "",
+        accessor.view().unwrap().length(),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor offset {}",
+        "",
+        accessor.offset(),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor data type {:?}",
+        "",
+        accessor.data_type(),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor component size {}",
+        "",
+        accessor.size(),
+        width = depth + 3
+    );
+    println!(
+        "{:width$}Accessor count {}",
+        "",
+        accessor.count(),
+        width = depth + 3
+    );
 }
 
 fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {

@@ -73,6 +73,8 @@ impl SceneTask {
                 )
                 .unwrap();
 
+            let indices: &[u32] = &mesh.indices;
+
             let index_buffer_id = resources
                 .create_buffer(
                     BufferCreateInfo {
@@ -84,7 +86,7 @@ impl SceneTask {
                             | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                         ..Default::default()
                     },
-                    DeviceLayout::for_value(mesh.indices.as_slice()).unwrap(),
+                    DeviceLayout::for_value(indices).unwrap(),
                 )
                 .unwrap();
 
