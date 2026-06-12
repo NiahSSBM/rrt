@@ -1,16 +1,8 @@
-use std::collections::HashMap;
-use std::f32::consts::PI;
-use std::fs::OpenOptions;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::mpsc;
-use std::time::Duration;
-use std::time::Instant;
-use std::vec;
-
+use bitstream_io::{ByteRead, ByteReader, LittleEndian};
 use color::AlphaColor;
 use color::palette::css;
 use gltf::buffer::Data;
+use gltf::json::accessor::ComponentType;
 use image::ImageBuffer;
 use image::ImageError;
 use image::Rgba;
@@ -20,6 +12,15 @@ use nalgebra::Point3;
 use nalgebra::Rotation3;
 use nalgebra::Vector3;
 use rand::TryRngCore;
+use std::collections::HashMap;
+use std::f32::consts::PI;
+use std::fs::OpenOptions;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc;
+use std::time::Duration;
+use std::time::Instant;
+use std::vec;
 use stl_io::IndexedMesh;
 use vulkano::shader::ShaderStage;
 use winit::event::KeyEvent;
@@ -144,7 +145,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     let stl_models = load_stls(stl_paths.clone());
 
     // Load GLTF model files
-    let gltf_paths = vec!["models/cube.glb"];
+    let gltf_paths = vec!["models/scene.gltf"];
     let gltf_models = load_gltfs(gltf_paths);
 
     let texture_paths = vec!["textures/grid.png", "textures/texture.jpg"];
@@ -174,7 +175,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         let verts = vertices.as_chunks::<3>().0;
         let indices = indices.as_chunks::<3>().0;
         for index in indices {
-            model_tris.push(Triangle::new(index.map(|f| f.into()), [0.0, 0.0, 0.0]));
+            model_tris.push(Triangle::new(*index, [0.0, 0.0, 0.0]));
         }
 
         for vert in verts {
@@ -375,8 +376,8 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
-fn load_gltfs(paths: Vec<&str>) -> Vec<(Vec<f32>, Vec<u16>)> {
-    let mut out: Vec<(Vec<f32>, Vec<u16>)> = Vec::new();
+fn load_gltfs(paths: Vec<&str>) -> Vec<(Vec<f32>, Vec<u32>)> {
+    let mut out: Vec<(Vec<f32>, Vec<u32>)> = Vec::new();
     for path in paths {
         println!("Loading GLTF {}", path);
         let (document, buffers, _images) = match gltf::import(path) {
@@ -399,291 +400,191 @@ fn load_gltfs(paths: Vec<&str>) -> Vec<(Vec<f32>, Vec<u16>)> {
             }
         }
 
-        out.push(get_gltf_vertices(document, buffers));
+        out.push(gltf_load_model(document, buffers));
     }
     out
 }
 
-fn get_gltf_vertices(document: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> (Vec<f32>, Vec<u16>) {
-    let mut vertices: Vec<f32> = Vec::new();
-    let mut indices: Vec<u16> = Vec::new();
+fn gltf_load_model(
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+) -> (Vec<f32>, Vec<u32>) {
     let buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
 
-    // Get vertex accessors
+    let mut vertices: Vec<f32> = Vec::new();
+    let mut normals: Vec<f32> = Vec::new();
+    let mut texcoords: Vec<u16> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
     let vertex_accessors = get_gltf_accessors(&document, gltf::Semantic::Positions);
-
-    // Get normal accessors
     let normal_accessors = get_gltf_accessors(&document, gltf::Semantic::Normals);
-
-    // Get normal accessors
     let tex_accessors = get_gltf_accessors(&document, gltf::Semantic::TexCoords(0));
-
-    // Get index accessors
     let index_accessors = get_gltf_index_accessors(&document);
 
     for accessor in vertex_accessors {
-        let mut i8_data: Vec<i8> = Vec::new();
-        let mut u8_data: Vec<u8> = Vec::new();
-        let mut i16_data: Vec<i16> = Vec::new();
-        let mut u16_data: Vec<u16> = Vec::new();
-        let mut u32_data: Vec<u32> = Vec::new();
-        let mut f32_data: Vec<f32> = Vec::new();
-
-        if let Some(view) = accessor.view() {
-            match accessor.data_type() {
-                gltf::accessor::DataType::I8 => {
-                    i8_data = gltf_load_i8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U8 => {
-                    u8_data = gltf_load_u8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::I16 => {
-                    i16_data = gltf_load_i16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U16 => {
-                    u16_data = gltf_load_u16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U32 => {
-                    u32_data = gltf_load_u32(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::F32 => {
-                    f32_data = gltf_load_f32(&accessor, &buffer);
-                }
+        match accessor.data_type() {
+            ComponentType::I8 => {
+                let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate.iter().map(|i| *i as f32));
             }
-
-            println!("i8 count: {}", i8_data.len());
-            println!("u8 count: {}", u8_data.len());
-            println!("i16 count: {}", i16_data.len());
-            println!("u16 count: {}", u16_data.len());
-            println!("u32 count: {}", u32_data.len());
-            println!("f32 count: {}", f32_data.len());
-
-            println!("i8_data: {:?}", i8_data);
-            println!("u8_data: {:?}", u8_data);
-            println!("i16_data: {:?}", i16_data);
-            println!("u16_data: {:?}", u16_data);
-            println!("u32_data: {:?}", u32_data);
-            println!("f32_data: {:?}", f32_data);
-
-            vertices = f32_data;
+            ComponentType::U8 => {
+                let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::I16 => {
+                let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::U16 => {
+                let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::U32 => {
+                let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::F32 => {
+                let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
+                vertices.extend(intermediate);
+            }
         }
     }
+    println!("Vertex data: {:?}", vertices);
+
     for accessor in normal_accessors {
-        let mut i8_data: Vec<i8> = Vec::new();
-        let mut u8_data: Vec<u8> = Vec::new();
-        let mut i16_data: Vec<i16> = Vec::new();
-        let mut u16_data: Vec<u16> = Vec::new();
-        let mut u32_data: Vec<u32> = Vec::new();
-        let mut f32_data: Vec<f32> = Vec::new();
-
-        if let Some(view) = accessor.view() {
-            match accessor.data_type() {
-                gltf::accessor::DataType::I8 => {
-                    i8_data = gltf_load_i8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U8 => {
-                    u8_data = gltf_load_u8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::I16 => {
-                    i16_data = gltf_load_i16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U16 => {
-                    u16_data = gltf_load_u16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U32 => {
-                    u32_data = gltf_load_u32(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::F32 => {
-                    f32_data = gltf_load_f32(&accessor, &buffer);
-                }
+        match accessor.data_type() {
+            ComponentType::I8 => {
+                let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate.iter().map(|i| *i as f32));
             }
-
-            println!("i8 count: {}", i8_data.len());
-            println!("u8 count: {}", u8_data.len());
-            println!("i16 count: {}", i16_data.len());
-            println!("u16 count: {}", u16_data.len());
-            println!("u32 count: {}", u32_data.len());
-            println!("f32 count: {}", f32_data.len());
-
-            println!("i8_data: {:?}", i8_data);
-            println!("u8_data: {:?}", u8_data);
-            println!("i16_data: {:?}", i16_data);
-            println!("u16_data: {:?}", u16_data);
-            println!("u32_data: {:?}", u32_data);
-            println!("f32_data: {:?}", f32_data);
-
+            ComponentType::U8 => {
+                let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::I16 => {
+                let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::U16 => {
+                let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::U32 => {
+                let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate.iter().map(|i| *i as f32));
+            }
+            ComponentType::F32 => {
+                let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
+                normals.extend(intermediate);
+            }
         }
     }
+    println!("Normal data: {:?}", normals);
+
     for accessor in tex_accessors {
-        let mut i8_data: Vec<i8> = Vec::new();
-        let mut u8_data: Vec<u8> = Vec::new();
-        let mut i16_data: Vec<i16> = Vec::new();
-        let mut u16_data: Vec<u16> = Vec::new();
-        let mut u32_data: Vec<u32> = Vec::new();
-        let mut f32_data: Vec<f32> = Vec::new();
-
-        if let Some(view) = accessor.view() {
-            match accessor.data_type() {
-                gltf::accessor::DataType::I8 => {
-                    i8_data = gltf_load_i8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U8 => {
-                    u8_data = gltf_load_u8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::I16 => {
-                    i16_data = gltf_load_i16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U16 => {
-                    u16_data = gltf_load_u16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U32 => {
-                    u32_data = gltf_load_u32(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::F32 => {
-                    f32_data = gltf_load_f32(&accessor, &buffer);
-                }
+        match accessor.data_type() {
+            ComponentType::I8 => {
+                let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate.iter().map(|i| *i as u16));
             }
-
-            println!("i8 count: {}", i8_data.len());
-            println!("u8 count: {}", u8_data.len());
-            println!("i16 count: {}", i16_data.len());
-            println!("u16 count: {}", u16_data.len());
-            println!("u32 count: {}", u32_data.len());
-            println!("f32 count: {}", f32_data.len());
-
-            println!("i8_data: {:?}", i8_data);
-            println!("u8_data: {:?}", u8_data);
-            println!("i16_data: {:?}", i16_data);
-            println!("u16_data: {:?}", u16_data);
-            println!("u32_data: {:?}", u32_data);
-            println!("f32_data: {:?}", f32_data);
-
+            ComponentType::U8 => {
+                let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate.iter().map(|i| *i as u16));
+            }
+            ComponentType::I16 => {
+                let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate.iter().map(|i| *i as u16));
+            }
+            ComponentType::U16 => {
+                let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate);
+            }
+            ComponentType::U32 => {
+                let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate.iter().map(|i| *i as u16));
+            }
+            ComponentType::F32 => {
+                let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
+                texcoords.extend(intermediate.iter().map(|i| *i as u16));
+            }
         }
     }
+    println!("Texcoord data: {:?}", texcoords);
 
     for accessor in index_accessors {
-        let mut i8_data: Vec<i8> = Vec::new();
-        let mut u8_data: Vec<u8> = Vec::new();
-        let mut i16_data: Vec<i16> = Vec::new();
-        let mut u16_data: Vec<u16> = Vec::new();
-        let mut u32_data: Vec<u32> = Vec::new();
-        let mut f32_data: Vec<f32> = Vec::new();
-
-        if let Some(view) = accessor.view() {
-            match accessor.data_type() {
-                gltf::accessor::DataType::I8 => {
-                    i8_data = gltf_load_i8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U8 => {
-                    u8_data = gltf_load_u8(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::I16 => {
-                    i16_data = gltf_load_i16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U16 => {
-                    u16_data = gltf_load_u16(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::U32 => {
-                    u32_data = gltf_load_u32(&accessor, &buffer);
-                }
-                gltf::accessor::DataType::F32 => {
-                    f32_data = gltf_load_f32(&accessor, &buffer);
-                }
+        match accessor.data_type() {
+            ComponentType::I8 => {
+                let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate.iter().map(|i| *i as u32));
             }
-
-            println!("i8 count: {}", i8_data.len());
-            println!("u8 count: {}", u8_data.len());
-            println!("i16 count: {}", i16_data.len());
-            println!("u16 count: {}", u16_data.len());
-            println!("u32 count: {}", u32_data.len());
-            println!("f32 count: {}", f32_data.len());
-
-            println!("i8_data: {:?}", i8_data);
-            println!("u8_data: {:?}", u8_data);
-            println!("i16_data: {:?}", i16_data);
-            println!("u16_data: {:?}", u16_data);
-            println!("u32_data: {:?}", u32_data);
-            println!("f32_data: {:?}", f32_data);
-
-            indices = u16_data;
+            ComponentType::U8 => {
+                let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate.iter().map(|i| *i as u32));
+            }
+            ComponentType::I16 => {
+                let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate.iter().map(|i| *i as u32));
+            }
+            ComponentType::U16 => {
+                let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate.iter().map(|i| *i as u32));
+            }
+            ComponentType::U32 => {
+                let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate);
+            }
+            ComponentType::F32 => {
+                let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
+                indices.extend(intermediate.iter().map(|i| *i as u32));
+            }
         }
     }
+    println!("Index data: {:?}", indices);
+
     (vertices, indices)
 }
 
-fn gltf_load_i8(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<i8> {
-    let mut out: Vec<i8> = Vec::new();
+fn gltf_get_accessor_data<T: bitstream_io::Primitive>(
+    accessor: &gltf::Accessor,
+    buffer: &gltf::buffer::Data,
+) -> Vec<T> {
+    let mut out = Vec::new();
     if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<1>()
-            .0;
-        for byte in bytes {
-            out.push(i8::from_le_bytes(*byte));
-        }
-    }
-    out
-}
+        let buffer_slice =
+            &buffer[view.offset()..accessor.size() * accessor.count() + view.offset()];
+        let mut reader = ByteReader::endian(buffer_slice, LittleEndian);
 
-fn gltf_load_u8(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-    if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<1>()
-            .0;
-        for byte in bytes {
-            out.push(u8::from_le_bytes(*byte));
-        }
-    }
-    out
-}
-
-fn gltf_load_i16(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<i16> {
-    let mut out: Vec<i16> = Vec::new();
-    if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<2>()
-            .0;
-        for byte in bytes {
-            out.push(i16::from_le_bytes(*byte));
-        }
-    }
-    out
-}
-
-fn gltf_load_u16(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u16> {
-    let mut out: Vec<u16> = Vec::new();
-    if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<2>()
-            .0;
-        for byte in bytes {
-            out.push(u16::from_le_bytes(*byte));
-        }
-    }
-    out
-}
-
-fn gltf_load_u32(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::new();
-    if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<4>()
-            .0;
-        for byte in bytes {
-            out.push(u32::from_le_bytes(*byte));
-        }
-    }
-    out
-}
-
-fn gltf_load_f32(accessor: &gltf::Accessor, buffer: &gltf::buffer::Data) -> Vec<f32> {
-    let mut out: Vec<f32> = Vec::new();
-    if let Some(view) = accessor.view() {
-        let bytes = buffer[view.offset()..accessor.size() * accessor.count() + view.offset()]
-            .as_chunks::<4>()
-            .0;
-        for byte in bytes {
-            out.push(f32::from_le_bytes(*byte));
+        match accessor.data_type() {
+            gltf::accessor::DataType::I8 => {
+                for byte in buffer_slice.as_chunks::<1>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
+            gltf::accessor::DataType::U8 => {
+                for byte in buffer_slice.as_chunks::<1>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
+            gltf::accessor::DataType::I16 => {
+                for byte in buffer_slice.as_chunks::<2>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
+            gltf::accessor::DataType::U16 => {
+                for byte in buffer_slice.as_chunks::<2>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
+            gltf::accessor::DataType::U32 => {
+                for byte in buffer_slice.as_chunks::<4>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
+            gltf::accessor::DataType::F32 => {
+                for byte in buffer_slice.as_chunks::<4>().0 {
+                    out.push(reader.read::<T>().unwrap());
+                }
+            }
         }
     }
     out

@@ -2034,6 +2034,7 @@ dependencies = [
 name = "rrt"
 version = "0.1.0"
 dependencies = [
+ "bitstream-io",
  "bytemuck",
  "color",
  "gltf",

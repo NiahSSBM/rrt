@@ -14,6 +14,7 @@ nalgebra = "0.34.1"
 bytemuck = "1.25.0"
 stl_io = "0.11.0"
 image = "0.25.10"
+bitstream-io = "4.10.0"
 
 [dependencies.gltf]
 version = "1.4.1"
