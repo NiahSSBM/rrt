@@ -249,16 +249,19 @@ impl Shader {
                 if image_state.image().extent()
                     != [texture.width() as u32, texture.height() as u32, 1]
                 {
+                    // TODO: Remove this buffer safely
+                    // It is causing validation errors
+                    //
                     // If there's a pre-existing texture buffer
                     // AND that buffer has a different size than what we need now
                     // Remove that buffer
-                    unsafe {
-                        self.resources
-                            .clone()
-                            .unwrap()
-                            .remove_image(self.texture.take().unwrap())
-                            .unwrap();
-                    }
+                    // unsafe {
+                    //     self.resources
+                    //         .clone()
+                    //         .unwrap()
+                    //         .remove_image(self.texture.take().unwrap())
+                    //         .unwrap();
+                    // }
                 }
             }
         }
@@ -328,14 +331,16 @@ impl Shader {
         }
         .unwrap();
 
-        unsafe {
-            match self.resources.clone().unwrap().remove_buffer(host_buffer) {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("Failed to remove temporary host buffer: {e}")
-                }
-            }
-        }
+        // TODO: remove this buffer safely, or cache it for later use
+        // It is causing causing validation errors
+        // unsafe {
+        //     match self.resources.clone().unwrap().remove_buffer(host_buffer) {
+        //         Ok(_) => {}
+        //         Err(e) => {
+        //             println!("Failed to remove temporary host buffer: {e}")
+        //         }
+        //     }
+        //}
 
         (device_buffer, sampler)
         //self.image = Some(device_buffer);
@@ -744,12 +749,15 @@ fn push_descriptor_set(
             _ => {}
         }
 
+        // TODO: Cleanup buffer safely
+        // This is causing validation errors
+        //
         // Cleanup buffer
-        unsafe {
-            if let Err(e) = resources.remove_buffer(device_buffer) {
-                println!("Failed to remove GPU buffer. This is a memory leak! {e}")
-            };
-        }
+        // unsafe {
+            // if let Err(e) = resources.remove_buffer(device_buffer) {
+            //     println!("Failed to remove GPU buffer. This is a memory leak! {e}")
+            // };
+        // }
     }
 
     // Construct a descriptor set from our device buffer
