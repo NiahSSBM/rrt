@@ -753,11 +753,11 @@ fn push_descriptor_set(
         // This is causing validation errors
         //
         // Cleanup buffer
-        // unsafe {
-            // if let Err(e) = resources.remove_buffer(device_buffer) {
-            //     println!("Failed to remove GPU buffer. This is a memory leak! {e}")
-            // };
-        // }
+         unsafe {
+             if let Err(e) = resources.remove_buffer(device_buffer) {
+                 println!("Failed to remove GPU buffer. This is a memory leak! {e}")
+             };
+         }
     }
 
     // Construct a descriptor set from our device buffer

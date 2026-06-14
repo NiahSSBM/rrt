@@ -1,9 +1,10 @@
 use std::{
-    collections::{BTreeMap},
+    collections::BTreeMap,
     slice,
     sync::{Arc, Mutex},
 };
 
+use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, IndexType},
     device::{Device, Queue},
@@ -24,7 +25,6 @@ use vulkano::{
     render_pass::Subpass,
     shader::ShaderStage,
 };
-use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 use vulkano_taskgraph::{
     ClearValues, Id, Task, TaskContext, TaskResult,
     command_buffer::RecordingCommandBuffer,
@@ -89,6 +89,9 @@ impl SceneTask {
                     DeviceLayout::for_value(indices).unwrap(),
                 )
                 .unwrap();
+
+            // Wait for current flight to finish
+            resources.flight(flight_id).unwrap().wait(None).unwrap();
 
             // Write buffers to device
             unsafe {
