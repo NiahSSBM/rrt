@@ -4,6 +4,7 @@ mod object;
 mod scene;
 mod shader;
 mod vgfx;
+mod shader_cache;
 
 use crate::game::{GameData, GameEvent, RenderEvent};
 use std::sync::{Mutex, mpsc};

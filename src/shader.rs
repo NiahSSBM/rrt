@@ -8,6 +8,9 @@ use std::{
     sync::Arc,
     vec,
 };
+use std::ops::Deref;
+use std::rc::Rc;
+use std::sync::Mutex;
 use vulkano::{
     DeviceSize, Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -29,20 +32,19 @@ use vulkano::{
     },
     memory::{
         DeviceAlignment,
-        allocator::{
-            AllocationCreateInfo, DeviceLayout, MemoryTypeFilter,
-        },
+        allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     },
     pipeline::PipelineLayout,
     shader::{EntryPoint, ShaderStage, ShaderStages},
     sync::Sharing,
 };
+use vulkano::shader::ShaderModule;
 use vulkano_taskgraph::{
     Id,
     command_buffer::CopyBufferToImageInfo,
     resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
-
+use crate::shader_cache::ShaderCache;
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -127,21 +129,6 @@ impl Vertex3D {
     }
 }
 
-#[derive(Clone)]
-pub struct Shader {
-    pub stage_pipeline: HashMap<ShaderStage, ShaderType>,
-    pub stage_entries: HashMap<ShaderStage, EntryPoint>,
-    queue: Option<Arc<Queue>>,
-    pub pipeline_layout: Option<Arc<PipelineLayout>>,
-    pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
-    pub additional_properties: Vec<AdditionalShaderProperties>,
-    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
-    resources: Option<Arc<Resources>>,
-    sampler: Option<Arc<Sampler>>,
-    staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
-    texture: Option<Id<Image>>,
-}
-
 struct VGFXDescriptorSetLayout {
     descriptor_type: DescriptorType,
     descriptor_count: u32,
@@ -155,27 +142,20 @@ struct VGFXDescriptorSetLayoutWithData {
     data: BTreeMap<u32, DescriptorData>,
 }
 
-// Takes an array of bytes and returns a sized array of max binding size
-fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
-    let mut out: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] = [0; STORAGE_BUFFER_BINDING_MAX_SIZE];
-    for (i, byte) in data.iter().enumerate() {
-        out[i] = *byte;
-    }
-    out
-}
-
-// This searches the vec of properties provided and returns the first of the same type of the desired property
-// desired_property can contain any data, only the type of the data is relevent
-fn get_shader_property(
-    desired_property: AdditionalShaderProperties,
-    properties: &Vec<AdditionalShaderProperties>,
-) -> Option<&AdditionalShaderProperties> {
-    for potential in properties {
-        if std::mem::discriminant(potential) == std::mem::discriminant(&desired_property) {
-            return Some(potential);
-        }
-    }
-    None
+#[derive(Clone)]
+pub struct Shader {
+    pub stage_pipeline: HashMap<ShaderStage, ShaderType>,
+    pub stage_entries: HashMap<ShaderStage, EntryPoint>,
+    queue: Option<Arc<Queue>>,
+    pub pipeline_layout: Option<Arc<PipelineLayout>>,
+    pub descriptor_sets: BTreeMap<u32, DescriptorSetWithOffsets>,
+    pub additional_properties: Vec<AdditionalShaderProperties>,
+    descriptor_set_allocator: Option<Arc<StandardDescriptorSetAllocator>>,
+    resources: Option<Arc<Resources>>,
+    sampler: Option<Arc<Sampler>>,
+    staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    texture: Option<Id<Image>>,
+    cache: Option<Arc<Mutex<ShaderCache>>>,
 }
 
 impl Shader {
@@ -187,6 +167,7 @@ impl Shader {
     // eg: no duplicates and vertex stage is present
     pub fn new(
         stage_pipeline: HashMap<ShaderStage, ShaderType>,
+        shader_cache: Option<Arc<Mutex<ShaderCache>>>,
         additional_properties: Vec<AdditionalShaderProperties>,
     ) -> Self {
         Self {
@@ -201,6 +182,7 @@ impl Shader {
             sampler: None,
             staged_texture: None,
             texture: None,
+            cache: shader_cache,
         }
     }
 
@@ -213,6 +195,7 @@ impl Shader {
         texture: ImageBuffer<Rgba<u8>, Vec<u8>>,
         flight_id: Id<Flight>,
     ) -> (Id<Image>, Arc<Sampler>) {
+        println!("loading texture");
         let sampler = self.sampler.clone().unwrap_or_else(|| {
             Sampler::new(
                 self.queue.clone().unwrap().device().clone(),
@@ -245,7 +228,7 @@ impl Shader {
             .unwrap();
 
         if self.texture.is_some() {
-            if let Ok(image_state) = self.resources.clone().unwrap().image(self.texture.unwrap()) {
+            if let Ok(image_state) = self.resources.clone().unwrap().image(self.texture.clone().unwrap()) {
                 if image_state.image().extent()
                     != [texture.width() as u32, texture.height() as u32, 1]
                 {
@@ -347,21 +330,21 @@ impl Shader {
     }
 
     pub fn build(&mut self, queue: Arc<Queue>, resources: Arc<Resources>, flight_id: Id<Flight>) {
-        self.queue = Some(queue.clone());
+        if let None = self.descriptor_set_allocator {
+            self.descriptor_set_allocator = Some(Arc::new(StandardDescriptorSetAllocator::new(
+                queue.device().clone(),
+                Default::default(),
+            )))
+        }
         self.resources = Some(resources);
-        self.descriptor_set_allocator = Some(Arc::new(StandardDescriptorSetAllocator::new(
-            queue.device().clone(),
-            Default::default(),
-        )));
+        self.queue = Some(queue);
 
-        match self.staged_texture.clone() {
-            Some(t) => {
-                let (texture, sampler) = self.load_texture(t, flight_id);
-                self.texture = Some(texture);
-                self.sampler = Some(sampler);
-                self.staged_texture = None;
-            }
-            None => {}
+        // Load texture if we have one in staging
+        if let Some(t) = self.staged_texture.clone() {
+            let (texture, sampler) = self.load_texture(t, flight_id);
+            self.texture = Some(texture);
+            self.sampler = Some(sampler);
+            self.staged_texture = None;
         }
 
         self.load(flight_id);
@@ -376,13 +359,13 @@ impl Shader {
     }
 
     // This is where the data inputs for each shader are defined
-    // Data is seperated by bindings. If we put something in binding 0 for a specific shader,
+    // Data is separated by bindings. If we put something in binding 0 for a specific shader,
     // other shaders can access that binding. So we need to make sure we don't overlap bindings,
-    // each type of data should have it's own binding
+    // each type of data should have its own binding
     //
     // For each new shader, a new match leaf is required
     fn load(&mut self, flight_id: Id<Flight>) {
-        if self.queue.is_none() || self.resources.is_none() {
+        if self.queue.is_none() | self.resources.is_none() {
             println!("WARNING: Queue or Resources are not initialized while loading shader.");
             return;
         }
@@ -405,11 +388,29 @@ impl Shader {
                     )
                     .expect("No perspective property on shader that requires perspective!");
 
-                    (
-                        vs_default::load(device.clone())
+                    // Load from cache if available
+                    let shader_module: EntryPoint;
+                    if let Some(c) = &self.cache {
+                        let mut lock = c.lock().unwrap();
+                        if let Some(s) = lock.get_entry("vs_default") {
+                            shader_module = s.clone();
+                        } else {
+                            shader_module = vs_default::load(device.clone())
+                                .unwrap()
+                                .entry_point("main")
+                                .unwrap();
+                            // Add to cache
+                            lock.add_entry("vs_default", shader_module.clone())
+                        }
+                    } else {
+                        shader_module = vs_default::load(device.clone())
                             .unwrap()
                             .entry_point("main")
-                            .unwrap(),
+                            .unwrap();
+                    }
+
+                    (
+                        shader_module.clone(),
                         BTreeMap::from([(
                             0,
                             DescriptorData::Buffer(pad(bytes_of(&vs_default::vInput {
@@ -466,11 +467,29 @@ impl Shader {
                         &default_texture
                     });
 
-                    (
-                        fs_default::load(device.clone())
+                    // Load from cache if available
+                    let shader_module: EntryPoint;
+                    if let Some(c) = &self.cache {
+                        let mut lock = c.lock().unwrap();
+                        if let Some(s) = lock.get_entry("fs_default") {
+                            shader_module = s.clone();
+                        } else {
+                            shader_module = fs_default::load(device.clone())
+                                .unwrap()
+                                .entry_point("main")
+                                .unwrap();
+                            // Add to cache
+                            lock.add_entry("fs_default", shader_module.clone())
+                        }
+                    } else {
+                        shader_module = fs_default::load(device.clone())
                             .unwrap()
                             .entry_point("main")
-                            .unwrap(),
+                            .unwrap();
+                    }
+
+                    (
+                        shader_module,
                         BTreeMap::from([
                             (
                                 2,
@@ -483,7 +502,7 @@ impl Shader {
                                             self.sampler = Some(sampler);
                                         }
                                         DescriptorData::Texture((
-                                            self.texture.unwrap(),
+                                            self.texture.clone().unwrap(),
                                             self.sampler.clone().unwrap(),
                                             t.clone(),
                                         ))
@@ -530,7 +549,7 @@ impl Shader {
     }
 
     // This function is split off from Shader::load() because
-    // it's an implemtation detail that shouldn't be worred about when adding new shaders
+    // it's an implementation detail that shouldn't be worried about when adding new shaders
     fn load_internal(
         &self,
         queue: Arc<Queue>,
@@ -703,8 +722,6 @@ fn push_descriptor_set(
             )
             .unwrap();
 
-
-
         let mut host_buffer_accesses = vec![];
         let mut image_accesses = vec![];
         let buffer_accesses = vec![];
@@ -753,11 +770,11 @@ fn push_descriptor_set(
         // This is causing validation errors
         //
         // Cleanup buffer
-         unsafe {
-             if let Err(e) = resources.remove_buffer(device_buffer) {
-                 println!("Failed to remove GPU buffer. This is a memory leak! {e}")
-             };
-         }
+        unsafe {
+            if let Err(e) = resources.remove_buffer(device_buffer) {
+                println!("Failed to remove GPU buffer. This is a memory leak! {e}")
+            };
+        }
     }
 
     // Construct a descriptor set from our device buffer
@@ -790,7 +807,7 @@ fn push_buffer(
 ) {
     // Wait for GPU to finish flight
     resources.flight(flight_id).unwrap().wait(None).unwrap();
-    
+
     unsafe {
         vulkano_taskgraph::execute(
             &queue,
@@ -811,6 +828,29 @@ fn push_buffer(
     .unwrap_or_else(|e| panic!("Failed to push buffer to GPU: {e}"));
 }
 
+// Takes an array of bytes and returns a sized array of max binding size
+fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
+    let mut out: [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] = [0; STORAGE_BUFFER_BINDING_MAX_SIZE];
+    for (i, byte) in data.iter().enumerate() {
+        out[i] = *byte;
+    }
+    out
+}
+
+// This searches the vec of properties provided and returns the first of the same type of the desired property
+// desired_property can contain any data, only the type of the data is relevent
+fn get_shader_property(
+    desired_property: AdditionalShaderProperties,
+    properties: &Vec<AdditionalShaderProperties>,
+) -> Option<&AdditionalShaderProperties> {
+    for potential in properties {
+        if std::mem::discriminant(potential) == std::mem::discriminant(&desired_property) {
+            return Some(potential);
+        }
+    }
+    None
+}
+
 pub mod vs_default {
     use bytemuck::NoUninit;
 
@@ -822,7 +862,6 @@ pub mod vs_default {
 }
 
 pub mod fs_default {
-    
 
     vulkano_shaders::shader! {
         ty: "fragment",

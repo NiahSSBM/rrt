@@ -378,7 +378,7 @@ impl WindowContext {
     }
 
     pub fn reload_shaders(&mut self) {
-        for mutex in self.meshes.clone() {
+        for mutex in &self.meshes {
             let mut mesh = mutex.lock().unwrap();
             mesh.shader.rebuild(self.flight_id);
         }
@@ -573,7 +573,7 @@ fn create_temp_mesh(
         nalgebra::Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 10.0).into(),
     );
     let mut tri_shaders =
-        crate::shader::Shader::new(stage_pipeline.clone(), vec![perspective.clone()]);
+        crate::shader::Shader::new(stage_pipeline.clone(), None, vec![perspective.clone()]);
 
     tri_shaders.build(queue, resources, flight_id);
 
