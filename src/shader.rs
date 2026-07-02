@@ -838,7 +838,7 @@ fn pad(data: &[u8]) -> [u8; STORAGE_BUFFER_BINDING_MAX_SIZE] {
 }
 
 // This searches the vec of properties provided and returns the first of the same type of the desired property
-// desired_property can contain any data, only the type of the data is relevent
+// desired_property can contain any data, only the type of the data is relevant
 fn get_shader_property(
     desired_property: AdditionalShaderProperties,
     properties: &Vec<AdditionalShaderProperties>,

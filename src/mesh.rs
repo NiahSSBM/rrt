@@ -1,6 +1,6 @@
 use crate::shader::{Shader, Vertex3D};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Triangle {
     indices: [u32; 3],
     normal: [f32; 3],
