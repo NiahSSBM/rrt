@@ -11,6 +11,7 @@ use std::{
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::time::Instant;
 use vulkano::{
     DeviceSize, Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -93,37 +94,20 @@ impl AdditionalShaderProperties {
     vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
 )]
 #[repr(C)]
-pub struct Vertex2D {
-    #[format(R32G32_SFLOAT)]
-    pub position: [f32; 2],
-    #[format(R32G32B32A32_SFLOAT)]
-    pub color: [f32; 4],
-}
-
-#[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
-)]
-#[repr(C)]
 pub struct Vertex3D {
     #[format(R32G32B32_SFLOAT)]
     pub position: [f32; 3],
+    #[format(R32G32B32_SFLOAT)]
+    pub normal: [f32; 3],
     #[format(R32G32B32A32_SFLOAT)]
     pub color: [f32; 4],
 }
 
-impl Vertex2D {
-    pub fn new(position: [f32; 2], color: AlphaColor<Srgb>) -> Self {
-        Self {
-            position: position,
-            color: color.components,
-        }
-    }
-}
-
 impl Vertex3D {
-    pub fn new(position: [f32; 3], color: AlphaColor<Srgb>) -> Self {
+    pub fn new(position: [f32; 3], normal: [f32; 3], color: AlphaColor<Srgb>) -> Self {
         Self {
-            position: position,
+            position,
+            normal,
             color: color.components,
         }
     }
@@ -156,6 +140,7 @@ pub struct Shader {
     staged_texture: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
     texture: Option<Id<Image>>,
     cache: Option<Arc<Mutex<ShaderCache>>>,
+    time: Instant,
 }
 
 impl Shader {
@@ -183,6 +168,7 @@ impl Shader {
             staged_texture: None,
             texture: None,
             cache: shader_cache,
+            time: Instant::now(),
         }
     }
 
@@ -428,6 +414,7 @@ impl Shader {
                                         _ => panic!("This branch should never be reached"),
                                     }
                                 },
+                                time: self.time.elapsed().as_secs_f32()
                             }))),
                         )]),
                     )

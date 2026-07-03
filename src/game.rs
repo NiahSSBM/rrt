@@ -31,7 +31,7 @@ use crate::object::Object;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 use crate::shader::Vertex3D;
-use crate::shader::{AdditionalShaderProperties, Vertex2D};
+use crate::shader::AdditionalShaderProperties;
 use crate::shader_cache::ShaderCache;
 
 const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
@@ -150,16 +150,15 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     // Load GLTF model files
     let mut gltf_paths = vec![];
     for i in 0..1 {
-        gltf_paths.push("models/cube.glb");
+        gltf_paths.push("models/sphere.glb");
     }
     let gltf_models = load_gltfs(gltf_paths);
 
-    let texture_paths = vec!["textures/grid.png", "textures/texture.jpg"];
+    let texture_paths = vec!["textures/grid.png"];
     data.persistent_textures = load_images(texture_paths);
 
-    let mut i = 0;
     for model in gltf_models {
-        for (j, (vertices, indices, normals)) in model {
+        for (i, (vertices, indices, normals)) in model {
             let tri_shaders = Shader::new(
                 stage_pipeline.clone(),
                 Some(shader_cache.clone()),
@@ -185,11 +184,15 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             let normals = normals.as_chunks::<3>().0;
 
             for (i, index) in indices.iter().enumerate() {
-                model_tris.push(Triangle::new(*index, *normals.get(i).unwrap_or_else(|| &[0.0, 0.0, 0.0])));
+                model_tris.push(Triangle::new(*index));
             }
 
-            for vert in verts {
-                model_verts.push(Vertex3D::new(vert.clone(), css::RED));
+            for (j, vert) in verts.iter().enumerate() {
+                model_verts.push(Vertex3D::new(
+                    vert.clone(),
+                    *normals.get(j).unwrap_or_else(|| &[0.0, 0.0, 0.0]),
+                    css::WHITE,
+                ));
             }
 
             let mesh = Arc::new(Mutex::new(Mesh3D::new(
@@ -204,7 +207,6 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
             state.objects.push(object);
-            //i += 3;
         }
     }
 
@@ -235,14 +237,16 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             let colors: [AlphaColor<color::Srgb>; 3] = [css::RED, css::BLUE, css::GREEN];
             let rand = rand::rng().try_next_u32().unwrap() % 3;
 
-            model_verts.push(Vertex3D::new(vertex.into(), colors[rand as usize]));
+            // TODO: Use real normals here
+            model_verts.push(Vertex3D::new(
+                vertex.into(),
+                [0.0, 0.0, 0.0],
+                colors[rand as usize],
+            ));
         }
 
         for face in model.faces {
-            model_tris.push(Triangle::new(
-                face.vertices.map(|v| v.clone() as u32),
-                [0.0, 0.0, 0.0],
-            ));
+            model_tris.push(Triangle::new(face.vertices.map(|v| v.clone() as u32)));
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(

@@ -3,12 +3,11 @@ use crate::shader::{Shader, Vertex3D};
 #[derive(Clone, Debug)]
 pub struct Triangle {
     indices: [u32; 3],
-    normal: [f32; 3],
 }
 
 impl Triangle {
-    pub(crate) fn new(indices: [u32; 3], normal: [f32; 3]) -> Self {
-        Self { indices, normal }
+    pub(crate) fn new(indices: [u32; 3]) -> Self {
+        Self { indices }
     }
 }
 
