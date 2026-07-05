@@ -22,7 +22,7 @@ void main() {
     gl_Position = mvp.proj * mvp.view *  mvp.model * vec4(position, 1.0);
     tex_coords = position.xy;
 
-    vec3 sun_position = vec3(sin(time), cos(time), 0.0);
+    vec3 sun_position = vec3(sin(time), 0.0, cos(time));
 
     fragColor = clamp(color * dot(normal, sun_position), vec4(0.0), vec4(1.0)) + 0.02;
 }
