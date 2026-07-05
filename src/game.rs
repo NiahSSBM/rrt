@@ -28,10 +28,10 @@ use winit::keyboard::PhysicalKey;
 
 use crate::mesh::{Mesh3D, Triangle};
 use crate::object::Object;
+use crate::shader::AdditionalShaderProperties;
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 use crate::shader::Vertex3D;
-use crate::shader::AdditionalShaderProperties;
 use crate::shader_cache::ShaderCache;
 
 const PHYSICS_UPDATES_PER_SECOND: f32 = 60.0;
@@ -150,7 +150,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     // Load GLTF model files
     let mut gltf_paths = vec![];
     for i in 0..1 {
-        gltf_paths.push("models/sphere.glb");
+        gltf_paths.push("models/parot.glb");
     }
     let gltf_models = load_gltfs(gltf_paths);
 
@@ -158,7 +158,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     data.persistent_textures = load_images(texture_paths);
 
     for model in gltf_models {
-        for (i, (vertices, indices, normals)) in model {
+        for (i, (vertices, indices, normals, texcoords)) in model {
             let tri_shaders = Shader::new(
                 stage_pipeline.clone(),
                 Some(shader_cache.clone()),
@@ -179,18 +179,25 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             let mut model_verts: Vec<Vertex3D> = vec![];
             let mut model_tris: Vec<Triangle> = vec![];
 
-            let verts = vertices.as_chunks::<3>().0;
+            println!("Number of vertices: {}", vertices.len());
+            println!("Number of indices: {}", indices.len());
+            println!("Number of normals: {}", normals.len());
+
+            let vertices = vertices.as_chunks::<3>().0;
             let indices = indices.as_chunks::<3>().0;
             let normals = normals.as_chunks::<3>().0;
 
-            for (i, index) in indices.iter().enumerate() {
-                model_tris.push(Triangle::new(*index));
+            for (j, index) in indices.iter().enumerate() {
+                model_tris.push(Triangle::new(
+                    *index,
+                    *normals.get(j).unwrap_or_else(|| &[0.0, 0.0, 0.0]),
+                ));
             }
 
-            for (j, vert) in verts.iter().enumerate() {
+            for (j, vert) in vertices.iter().enumerate() {
                 model_verts.push(Vertex3D::new(
                     vert.clone(),
-                    *normals.get(j).unwrap_or_else(|| &[0.0, 0.0, 0.0]),
+                    normals.get(j).unwrap().clone(),
                     css::WHITE,
                 ));
             }
@@ -202,9 +209,9 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             )));
 
             let mut object = Object::from_mesh(mesh.clone());
-            object.translate(Vector3::new(-1.0 + (i as f32), 1.0, -3.0));
-            object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
-            object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
+            object.translate(Vector3::new(-1.0, 1.0, -3.0));
+            //object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
+            object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 1.0));
 
             state.objects.push(object);
         }
@@ -240,13 +247,16 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
             // TODO: Use real normals here
             model_verts.push(Vertex3D::new(
                 vertex.into(),
-                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
                 colors[rand as usize],
             ));
         }
 
         for face in model.faces {
-            model_tris.push(Triangle::new(face.vertices.map(|v| v.clone() as u32)));
+            model_tris.push(Triangle::new(
+                face.vertices.map(|v| v.clone() as u32),
+                [0.0, 1.0, 0.0],
+            ));
         }
 
         let mesh = Arc::new(Mutex::new(Mesh3D::new(
@@ -261,7 +271,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 2.0));
 
         //state.objects.push(object);
-        i += 3;
+        //i += 3;
     }
 
     // Send each mesh to be added to the vertex buffer
@@ -392,8 +402,8 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     GameStatus::Ok
 }
 
-fn load_gltfs(paths: Vec<&str>) -> Vec<BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>)>> {
-    let mut out: Vec<BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>)>> = Vec::new();
+fn load_gltfs(paths: Vec<&str>) -> Vec<BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>, Vec<f32>)>> {
+    let mut out: Vec<BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>, Vec<f32>)>> = Vec::new();
     for path in paths {
         println!("Loading GLTF {}", path);
         let (document, buffers, _images) = match gltf::import(path) {
@@ -424,11 +434,12 @@ fn load_gltfs(paths: Vec<&str>) -> Vec<BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<
 fn gltf_load_model(
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
-) -> BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>)> {
+) -> BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>, Vec<f32>)> {
     let buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
+    let meshes = document.meshes();
 
-    let mut vertex_map: BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>)> = BTreeMap::new();
-    let default_vertex_map = (vec![], vec![], vec![]);
+    let mut vertex_map: BTreeMap<usize, (Vec<f32>, Vec<u32>, Vec<f32>, Vec<f32>)> = BTreeMap::new();
+    let default_vertex_map = (vec![], vec![], vec![], vec![]);
 
     let vertex_accessors = get_gltf_accessors(&document, gltf::Semantic::Positions);
     let normal_accessors = get_gltf_accessors(&document, gltf::Semantic::Normals);
@@ -436,91 +447,81 @@ fn gltf_load_model(
     let index_accessors = get_gltf_index_accessors(&document);
 
     for (i, accessor) in vertex_accessors.iter().enumerate() {
+        let old_key = vertex_map
+            .get(&i)
+            .unwrap_or_else(|| &default_vertex_map)
+            .clone();
+
         match accessor.data_type() {
             ComponentType::I8 => {
                 let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U8 => {
                 let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::I16 => {
                 let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U16 => {
                 let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U32 => {
                 let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map.get(&i).unwrap().clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::F32 => {
                 let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         intermediate.iter().map(|f| *f as f32).collect(),
                         old_key.1,
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
@@ -528,94 +529,81 @@ fn gltf_load_model(
     }
 
     for (i, accessor) in normal_accessors.iter().enumerate() {
+        let old_key = vertex_map
+            .get(&i)
+            .unwrap_or_else(|| &default_vertex_map)
+            .clone();
+
         match accessor.data_type() {
             ComponentType::I8 => {
                 let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U8 => {
                 let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::I16 => {
                 let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U16 => {
                 let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U32 => {
                 let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::F32 => {
                 let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
                         intermediate.iter().map(|f| *f as f32).collect(),
+                        old_key.3,
                     ),
                 );
             }
@@ -623,93 +611,80 @@ fn gltf_load_model(
     }
 
     for (i, accessor) in tex_accessors.iter().enumerate() {
+        let old_key = vertex_map
+            .get(&i)
+            .unwrap_or_else(|| &default_vertex_map)
+            .clone();
+
         match accessor.data_type() {
             ComponentType::I8 => {
                 let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
             }
             ComponentType::U8 => {
                 let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
             }
             ComponentType::I16 => {
                 let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
             }
             ComponentType::U16 => {
                 let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
             }
             ComponentType::U32 => {
                 let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
             }
             ComponentType::F32 => {
                 let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         old_key.1,
+                        old_key.2,
                         intermediate.iter().map(|f| *f as f32).collect(),
                     ),
                 );
@@ -719,94 +694,81 @@ fn gltf_load_model(
 
     for (i, accessor) in index_accessors.iter().enumerate() {
         print_accessor(&accessor, 0);
+        let old_key = vertex_map
+            .get(&i)
+            .unwrap_or_else(|| &default_vertex_map)
+            .clone();
+
         match accessor.data_type() {
             ComponentType::I8 => {
                 let intermediate: Vec<i8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U8 => {
                 let intermediate: Vec<u8> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::I16 => {
                 let intermediate: Vec<i16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U16 => {
                 let intermediate: Vec<u16> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::U32 => {
                 let intermediate: Vec<u32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }
             ComponentType::F32 => {
                 let intermediate: Vec<f32> = gltf_get_accessor_data(&accessor, &buffer);
-                let old_key = vertex_map
-                    .get(&i)
-                    .unwrap_or_else(|| &default_vertex_map)
-                    .clone();
                 vertex_map.insert(
                     i,
                     (
                         old_key.0,
                         intermediate.iter().map(|f| *f as u32).collect(),
                         old_key.2,
+                        old_key.3,
                     ),
                 );
             }

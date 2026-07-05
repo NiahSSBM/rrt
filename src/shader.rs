@@ -91,7 +91,7 @@ impl AdditionalShaderProperties {
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy,
+    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy, Debug
 )]
 #[repr(C)]
 pub struct Vertex3D {
@@ -414,7 +414,7 @@ impl Shader {
                                         _ => panic!("This branch should never be reached"),
                                     }
                                 },
-                                time: self.time.elapsed().as_secs_f32()
+                                time: self.time.elapsed().as_secs_f32(),
                             }))),
                         )]),
                     )
