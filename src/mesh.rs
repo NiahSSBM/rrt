@@ -1,5 +1,5 @@
+use image::{ImageBuffer, Rgba};
 use crate::shader::{Shader, Vertex3D};
-use nalgebra::zero;
 
 #[derive(Clone, Debug)]
 pub struct Triangle {

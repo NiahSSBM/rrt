@@ -8,7 +8,6 @@ use nalgebra::Rotation3;
 use nalgebra::Vector3;
 use std::collections::HashMap;
 use std::f32::consts::PI;
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -16,7 +15,6 @@ use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 use std::vec;
-use stl_io::IndexedMesh;
 use vulkano::shader::ShaderStage;
 use winit::event::KeyEvent;
 use winit::keyboard::KeyCode;
@@ -154,7 +152,14 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     );
 
     // Load objects
-    let paths = vec!["models/hqsphere.glb", "models/parot.glb"];
+    let paths = vec![
+        "models/texturedsphere.glb",
+        //"models/sphere.glb",
+        //"models/smoothsphere.glb",
+        //"models/hqsphere.glb",
+        "models/smoothhqsphere.glb",
+        //"models/trex.glb"
+    ];
     let mut objects = vec![];
     for path in paths {
         objects.push(Object::from_path(&Path::new(path), shader.clone()));
@@ -177,6 +182,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
     }
 }
 
+/// Enables rendering for a given object. Recurses through child objects.
 fn set_object_render(object: &Object, data: &GameData) {
     if object.mesh.is_some() {
         data.to_render
@@ -305,38 +311,6 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
 
     state.frame_counter += 1;
     GameStatus::Ok
-}
-
-fn load_stls(paths: Vec<&str>) -> Vec<IndexedMesh> {
-    let mut loaded_models: Vec<IndexedMesh> = Vec::new();
-
-    for path in paths {
-        println!("Loading STL {}", path);
-        let mut file = match OpenOptions::new().read(true).open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("Could not open file: {e}");
-                continue;
-            }
-        };
-
-        match stl_io::read_stl(&mut file) {
-            Ok(m) => {
-                println!("Model validation: {:?}", m.validate());
-                println!(
-                    "Number of triangles read from file: {:?}",
-                    m.faces.iter().size_hint()
-                );
-                loaded_models.push(m);
-            }
-            Err(e) => {
-                println!("Could not load STL: {e}");
-                continue;
-            }
-        };
-    }
-
-    loaded_models
 }
 
 fn load_images(paths: Vec<&str>) -> Vec<ImageBuffer<Rgba<u8>, Vec<u8>>> {

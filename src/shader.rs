@@ -1,17 +1,19 @@
+use crate::shader_cache::ShaderCache;
 use bytemuck::bytes_of;
 use color::{AlphaColor, Srgb};
 use image::{ImageBuffer, Rgba};
 use nalgebra::Matrix4;
+use std::ops::Deref;
+use std::rc::Rc;
+use std::sync::Mutex;
+use std::time::Instant;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
     sync::Arc,
     vec,
 };
-use std::ops::Deref;
-use std::rc::Rc;
-use std::sync::Mutex;
-use std::time::Instant;
+use vulkano::shader::ShaderModule;
 use vulkano::{
     DeviceSize, Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -39,13 +41,11 @@ use vulkano::{
     shader::{EntryPoint, ShaderStage, ShaderStages},
     sync::Sharing,
 };
-use vulkano::shader::ShaderModule;
 use vulkano_taskgraph::{
     Id,
     command_buffer::CopyBufferToImageInfo,
     resource::{AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources},
 };
-use crate::shader_cache::ShaderCache;
 
 // Size in bytes
 const STORAGE_BUFFER_BINDING_MAX_SIZE: usize = 1024;
@@ -86,12 +86,18 @@ impl AdditionalShaderProperties {
     }
 
     fn texture_default() -> Self {
-        Self::Texture(ImageBuffer::<Rgba<u8>, Vec<u8>>::new(32, 32))
+        Self::Texture(image::ImageBuffer::from_fn(64, 64, |_, _| {
+            image::Rgba([255, 255, 255, 255])
+        }))
     }
 }
 
 #[derive(
-    vulkano::buffer::BufferContents, vulkano::pipeline::graphics::vertex_input::Vertex, Clone, Copy, Debug
+    vulkano::buffer::BufferContents,
+    vulkano::pipeline::graphics::vertex_input::Vertex,
+    Clone,
+    Copy,
+    Debug,
 )]
 #[repr(C)]
 pub struct Vertex3D {
@@ -214,7 +220,12 @@ impl Shader {
             .unwrap();
 
         if self.texture.is_some() {
-            if let Ok(image_state) = self.resources.clone().unwrap().image(self.texture.clone().unwrap()) {
+            if let Ok(image_state) = self
+                .resources
+                .clone()
+                .unwrap()
+                .image(self.texture.clone().unwrap())
+            {
                 if image_state.image().extent()
                     != [texture.width() as u32, texture.height() as u32, 1]
                 {

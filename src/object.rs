@@ -1,14 +1,18 @@
+use crate::mesh::{Mesh3D, Triangle};
+use crate::shader::{Shader, Vertex3D};
 use bitstream_io::{ByteRead, ByteReader, LittleEndian};
 use color::palette::css;
+use gltf::buffer::View;
+use gltf::image::Source;
 use gltf::json::accessor::{ComponentType, Type};
 use nalgebra::{Rotation3, Transform3, Vector3, max};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-use crate::mesh::{Mesh3D, Triangle};
-use crate::shader::{Shader, Vertex3D};
+use image::codecs::png::PngDecoder;
+use image::{ImageBuffer, ImageDecoder, Rgba};
 
 pub struct Object {
     pub path: PathBuf,
@@ -66,6 +70,8 @@ impl Object {
         self.transform *= rotation;
     }
 
+    /// If a path is set, and the file is a supported type (GLB or GLTF), the file is loaded into this objects children.
+    /// Does nothing if no path was set, the file does not exist, or no shader was set.
     pub fn load(&mut self) {
         if self.path.to_str().unwrap_or("").is_empty() {
             return;
@@ -81,12 +87,14 @@ impl Object {
                 println!("Tried to load gltf without a shader!");
                 return;
             }
-            self.children = load_gltf(self.path.clone(), self.shader.clone().unwrap())
+            self.children = load_gltf(self.path.clone(), &mut self.shader.clone().unwrap())
         }
     }
 }
 
-fn load_gltf(path: PathBuf, shader: Shader) -> Vec<Object> {
+/// Loads a GLTF or GLB file from a path and converts it to a Vector of compatible rrt::Objects.
+/// Also prints a tree of what is loaded.
+fn load_gltf(path: PathBuf, shader: &mut Shader) -> Vec<Object> {
     let mut out: Vec<Object> = Vec::new();
     println!("Loading GLTF {}", path.display());
 
@@ -99,6 +107,23 @@ fn load_gltf(path: PathBuf, shader: Shader) -> Vec<Object> {
     };
 
     println!("Scenes loaded: {}", document.scenes().count());
+
+    println!("Materials loaded: {}", document.materials().count());
+    for material in document.materials() {
+        print_material(&material, 1);
+    }
+
+    println!("Textures loaded: {}", document.textures().count());
+    for texture in document.textures() {
+        print_texture(&texture, 1);
+        match texture.source().source() {
+            Source::View { view, mime_type } => {
+                shader.set_texture(gltf_load_image_from_view(&view, buffers.get(0).unwrap()).unwrap());
+            },
+            Source::Uri { uri, mime_type } => {},
+        }
+    }
+
     for scene in document.scenes() {
         println!(
             "Loaded Scene {}",
@@ -116,14 +141,24 @@ fn load_gltf(path: PathBuf, shader: Shader) -> Vec<Object> {
         let vertices = vertex_components
             .as_chunks::<3>()
             .0
-            .iter().enumerate()
-            .map(|(i, vertex)| Vertex3D::new(*vertex, *normals.get(i).unwrap_or(&[0.0, 0.0, 0.0]), css::WHITE))
+            .iter()
+            .enumerate()
+            .map(|(i, vertex)| {
+                Vertex3D::new(
+                    *vertex,
+                    *normals.get(i).unwrap_or(&[0.0, 0.0, 0.0]),
+                    css::WHITE,
+                )
+            })
             .collect();
         let triangles = indices
             .as_chunks::<3>()
             .0
-            .iter().enumerate()
-            .map(|(i, indices)| Triangle::new(*indices, *normals.get(i).unwrap_or(&[0.0, 0.0, 0.0])))
+            .iter()
+            .enumerate()
+            .map(|(i, indices)| {
+                Triangle::new(*indices, *normals.get(i).unwrap_or(&[0.0, 0.0, 0.0]))
+            })
             .collect();
 
         out.push(Object::from_mesh(Mesh3D::new(
@@ -396,7 +431,7 @@ fn gltf_load_model(
     }
 
     for (i, accessor) in index_accessors.iter().enumerate() {
-        print_accessor(&accessor, 0);
+        print_accessor(&accessor, 3);
         let old_key = vertex_map
             .get(&i)
             .unwrap_or_else(|| &default_vertex_map)
@@ -524,10 +559,30 @@ fn gltf_get_accessor_data<T: bitstream_io::Primitive>(
     out
 }
 
+fn gltf_load_image_from_view(view: &View, buffer: &gltf::buffer::Data) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let source = std::io::Cursor::new(&buffer[view.offset()..view.offset() + view.length()]);
+    let decoder = PngDecoder::new(source).unwrap();
+    let mut destination: Vec<u8> = vec![0; decoder.total_bytes() as usize];
+    let dimensions = decoder.dimensions();
+    if let Ok(_) = decoder.read_image(&mut destination) {
+        let out = ImageBuffer::from_raw(dimensions.0, dimensions.1, destination);
+        if let Some(_) = out {
+            println!("Successfully read image");
+            out
+        } else {
+            println!("Failed to decode image");
+            None
+        }
+    } else {
+        println!("Failed to read image");
+        None
+    }
+}
+
 fn get_gltf_accessors(
     document: &gltf::Document,
     desired_semantic: gltf::Semantic,
-) -> Vec<gltf::Accessor> {
+) -> Vec<gltf::Accessor<'_>> {
     let mut accessors = Vec::new();
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
@@ -551,18 +606,14 @@ fn get_gltf_index_accessors(document: &gltf::Document) -> Vec<gltf::Accessor> {
     accessors
 }
 
+/// Recursively prints the contents of a GLTF node.
+/// `depth` is the current depth, used for indentations, not a recursion limit.
 fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
     println!(
         "{:width$}Loaded Node {} with {} child nodes",
         "",
         node.name().unwrap_or("[unnammed node]"),
         node.children().len(),
-        width = depth
-    );
-    println!(
-        "{:width$}Node transform {:?}",
-        "",
-        node.transform(),
         width = depth
     );
     if let Some(mesh) = node.mesh() {
@@ -583,6 +634,16 @@ fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
                 primitive.attributes().len(),
                 width = depth + 2
             );
+
+            if let Some(index) = primitive.material().index() {
+                println!(
+                    "{:width$}Primitive uses {} material with index {}",
+                    "",
+                    primitive.material().name().unwrap_or("[unnammed material]"),
+                    index,
+                    width = depth + 2
+                );
+            }
 
             println!(
                 "{:width$}Primitive has {} morph targets",
@@ -625,60 +686,124 @@ fn walk_gltf_nodes(node: &gltf::Node, depth: usize) {
     }
 }
 
-fn print_accessor(accessor: &gltf::Accessor, depth: usize) {
-    println!(
-        "{:width$}Loaded accessor {}",
-        "",
-        accessor.name().unwrap_or("[unnammed accessor]"),
-        width = depth + 3
-    );
-    if let Some(sparse) = accessor.sparse() {
-        println!("{:width$}Accessor is sparse", "", width = depth + 3);
+fn print_material(material: &gltf::Material, depth: usize) {
+    if material.index().is_none() {
+        println!(
+            "{:depth$}Material {} is using the default material",
+            "",
+            material.name().unwrap_or("[unnammed material]"),
+        );
+        return;
     }
-    if let Some(view) = accessor.view() {
-        println!(
-            "{:width$}Accessor view offset {}",
-            "",
-            view.offset(),
-            width = depth + 3
-        );
-        println!(
-            "{:width$}Accessor view size {}",
-            "",
-            view.length(),
-            width = depth + 3
-        );
-        if let Some(stride) = view.stride() {
-            println!(
-                "{:width$}Accessor view stride {}",
-                "",
-                stride,
-                width = depth + 3
-            );
+
+    println!("{:depth$}Material index {}", "", material.index().unwrap());
+    let depth = depth + 1;
+    if let Some(alpha_cutoff) = material.alpha_cutoff() {
+        println!("{:depth$}Alpha cutoff {}", "", alpha_cutoff)
+    }
+    println!("{:depth$}Alpha mode {:?}", "", material.alpha_mode());
+    println!("{:depth$}Double sided {}", "", material.double_sided());
+    //println!("{:depth$}Metallic roughness {}", "", ""); // TODO
+    //println!("{:depth$}Specular glossiness {}", "" , ""); // TODO
+    println!(
+        "{:depth$}Normal texture {}",
+        "",
+        material.normal_texture().is_some()
+    );
+    println!(
+        "{:depth$}Occlusion texture {}",
+        "",
+        material.occlusion_texture().is_some()
+    );
+    println!(
+        "{:depth$}Emissive texture {}",
+        "",
+        material.emissive_texture().is_some()
+    );
+    println!(
+        "{:depth$}Emissive factor {:?}",
+        "",
+        material.emissive_factor()
+    );
+}
+
+fn print_texture(texture: &gltf::Texture, depth: usize) {
+    println!(
+        "{:depth$}Loaded texture {} with index {}",
+        "",
+        texture.name().unwrap_or("[unnammed texture]"),
+        texture.index()
+    );
+    let depth = depth + 1;
+    println!(
+        "{:depth$}Loaded sampler {} with index {}",
+        "",
+        texture.sampler().name().unwrap_or("[unnammed sampler]"),
+        texture.index()
+    );
+    println!(
+        "{:depth$}Loaded texture {}",
+        "",
+        texture.source().name().unwrap_or("[unnammed texture]")
+    );
+    match texture.source().source() {
+        Source::View { view, mime_type } => {
+            println!("{:depth$}Texture is located in a view", "");
+            println!("{:depth$}MIME type is {}", "", mime_type);
+            print_view(&view, depth + 1);
+        }
+        Source::Uri { uri, mime_type } => {
+            println!("{:depth$}Texture is located in a URI", "");
+            if let Some(mime) = mime_type {
+                println!("{:depth$}MIME type is {}", "", mime);
+            }
+            println!("{:depth$}{}", "", uri, depth = depth + 1);
         }
     }
+}
+
+fn print_accessor(accessor: &gltf::Accessor, depth: usize) {
     println!(
-        "{:width$}Accessor offset {}",
+        "{:depth$}Loaded accessor {}",
+        "",
+        accessor.name().unwrap_or("[unnammed accessor]"),
+    );
+    if let Some(sparse) = accessor.sparse() {
+        println!("{:depth$}Accessor is sparse", "");
+    }
+    if let Some(view) = accessor.view() {
+        print_view(&view, depth + 1);
+    }
+    println!(
+        "{:depth$}Accessor offset {}",
         "",
         accessor.offset(),
-        width = depth + 3
+        depth = depth + 1
     );
     println!(
-        "{:width$}Accessor data type {:?}",
+        "{:depth$}Accessor data type {:?}",
         "",
         accessor.data_type(),
-        width = depth + 3
+        depth = depth + 1
     );
     println!(
-        "{:width$}Accessor component size {}",
+        "{:depth$}Accessor component size {}",
         "",
         accessor.size(),
-        width = depth + 3
+        depth = depth + 1
     );
     println!(
-        "{:width$}Accessor count {}",
+        "{:depth$}Accessor count {}",
         "",
         accessor.count(),
-        width = depth + 3
+        depth = depth + 1
     );
+}
+
+fn print_view(view: &View, depth: usize) {
+    println!("{:depth$}View offset {}", "", view.offset(),);
+    println!("{:depth$}View size {}", "", view.length(),);
+    if let Some(stride) = view.stride() {
+        println!("{:depth$}View stride {}", "", stride,);
+    }
 }
