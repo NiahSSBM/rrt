@@ -5,14 +5,15 @@ use color::palette::css;
 use gltf::buffer::View;
 use gltf::image::Source;
 use gltf::json::accessor::{ComponentType, Type};
+use image::buffer::ConvertBuffer;
+use image::codecs::png::PngDecoder;
+use image::{ColorType, ImageBuffer, ImageDecoder, Luma, LumaA, Rgb, Rgba};
 use nalgebra::{Rotation3, Transform3, Vector3, max};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use image::codecs::png::PngDecoder;
-use image::{ImageBuffer, ImageDecoder, Rgba};
 
 pub struct Object {
     pub path: PathBuf,
@@ -118,9 +119,11 @@ fn load_gltf(path: PathBuf, shader: &mut Shader) -> Vec<Object> {
         print_texture(&texture, 1);
         match texture.source().source() {
             Source::View { view, mime_type } => {
-                shader.set_texture(gltf_load_image_from_view(&view, buffers.get(0).unwrap()).unwrap());
-            },
-            Source::Uri { uri, mime_type } => {},
+                shader.set_texture(
+                    gltf_load_image_from_view(&view, buffers.get(0).unwrap()).unwrap(),
+                );
+            }
+            Source::Uri { uri, mime_type } => {}
         }
     }
 
@@ -559,15 +562,71 @@ fn gltf_get_accessor_data<T: bitstream_io::Primitive>(
     out
 }
 
-fn gltf_load_image_from_view(view: &View, buffer: &gltf::buffer::Data) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+fn gltf_load_image_from_view(
+    view: &View,
+    buffer: &gltf::buffer::Data,
+) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let source = std::io::Cursor::new(&buffer[view.offset()..view.offset() + view.length()]);
     let decoder = PngDecoder::new(source).unwrap();
-    let mut destination: Vec<u8> = vec![0; decoder.total_bytes() as usize];
+    let color_type = decoder.color_type();
     let dimensions = decoder.dimensions();
+    let mut destination: Vec<u8> = vec![0; decoder.total_bytes() as usize];
     if let Ok(_) = decoder.read_image(&mut destination) {
-        let out = ImageBuffer::from_raw(dimensions.0, dimensions.1, destination);
+        let out = match color_type {
+            ColorType::L8 => {
+                if let Some(image) = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
+                    dimensions.0,
+                    dimensions.1,
+                    destination,
+                ) {
+                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                } else {
+                    None
+                }
+            }
+            ColorType::La8 => {
+                if let Some(image) = ImageBuffer::<LumaA<u8>, Vec<u8>>::from_raw(
+                    dimensions.0,
+                    dimensions.1,
+                    destination,
+                ) {
+                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                } else {
+                    None
+                }
+            }
+            ColorType::Rgb8 => {
+                if let Some(image) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+                    dimensions.0,
+                    dimensions.1,
+                    destination,
+                ) {
+                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                } else {
+                    None
+                }
+            }
+            ColorType::Rgba8 => {
+                if let Some(image) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+                    dimensions.0,
+                    dimensions.1,
+                    destination,
+                ) {
+                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                } else {
+                    None
+                }
+            }
+            ColorType::L16 => None, // Non-8 bit colors are not supported currently
+            ColorType::La16 => None,
+            ColorType::Rgb16 => None,
+            ColorType::Rgba16 => None,
+            ColorType::Rgb32F => None,
+            ColorType::Rgba32F => None,
+            _ => None,
+        };
         if let Some(_) = out {
-            println!("Successfully read image");
+            println!("Successfully decoded image");
             out
         } else {
             println!("Failed to decode image");
@@ -742,9 +801,12 @@ fn print_texture(texture: &gltf::Texture, depth: usize) {
         texture.index()
     );
     println!(
-        "{:depth$}Loaded texture {}",
+        "{:depth$}Loaded texture from source {}",
         "",
-        texture.source().name().unwrap_or("[unnammed texture]")
+        texture
+            .source()
+            .name()
+            .unwrap_or("[unnammed texture source]")
     );
     match texture.source().source() {
         Source::View { view, mime_type } => {

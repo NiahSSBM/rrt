@@ -153,12 +153,13 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 
     // Load objects
     let paths = vec![
-        "models/texturedsphere.glb",
+        //"models/texturedsphere.glb",
         //"models/sphere.glb",
         //"models/smoothsphere.glb",
         //"models/hqsphere.glb",
-        "models/smoothhqsphere.glb",
-        //"models/trex.glb"
+        //"models/smoothhqsphere.glb",
+        "models/trex.glb"
+        //"models/macaw.glb"
     ];
     let mut objects = vec![];
     for path in paths {
