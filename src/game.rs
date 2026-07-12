@@ -2,10 +2,10 @@ use image::ImageBuffer;
 use image::ImageError;
 use image::Rgba;
 use image::open;
-use nalgebra::Matrix4;
 use nalgebra::Point3;
 use nalgebra::Rotation3;
 use nalgebra::Vector3;
+use nalgebra::{Matrix4, Scale3, Similarity3, TGeneral, Transform3, Translation3, try_convert};
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::path::Path;
@@ -158,8 +158,9 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         //"models/smoothsphere.glb",
         //"models/hqsphere.glb",
         //"models/smoothhqsphere.glb",
-        "models/trex.glb",
-        "models/macaw.glb",
+        "models/scaletest.glb",
+        //"models/trex.glb",
+        //"models/macaw.glb",
     ];
     let mut objects = vec![];
     for path in paths {
@@ -168,9 +169,9 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 
     let mut i = 0;
     for mut object in objects {
-        object.translate(Vector3::new(-1.0 + i as f32, 1.0, -3.0));
+        object.translate(Translation3::new(-1.0 + i as f32, 1.0, -3.0));
+        //object.scale(Scale3::new(1.5, 1.0, 1.0));
         //object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
-        object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 1.0));
 
         object.load();
 
@@ -195,20 +196,6 @@ fn set_object_render(object: &Object, data: &GameData) {
     }
     for child in &object.children {
         set_object_render(child, data);
-    }
-}
-
-fn update_object_descriptors(
-    object: &Object,
-    state: &GameState,
-    descriptor: &AdditionalShaderProperties,
-) {
-    if object.mesh.is_some() {
-        let mut mesh = object.mesh.as_ref().unwrap().lock().unwrap();
-        mesh.shader.update_descriptor(descriptor.clone());
-    }
-    for child in &object.children {
-        update_object_descriptors(child, state, descriptor);
     }
 }
 
@@ -287,20 +274,14 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     }
 
     for object in &state.objects {
-        update_object_descriptors(
-            object,
-            state,
-            &AdditionalShaderProperties::Perspective(
-                object.transform.to_homogeneous().into(),
-                Matrix4::look_at_rh(
-                    &state.camera.position,
-                    &(state.camera.position + state.camera.front),
-                    &state.camera.up,
-                )
-                .into(),
-                Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
-            ),
-        );
+        object.update_view(
+            Matrix4::look_at_rh(
+                &state.camera.position,
+                &(state.camera.position + state.camera.front),
+                &state.camera.up,
+            )
+            .into(),
+        )
     }
 
     if let Err(e) = data.to_render.send(RenderEvent::UpdateShader) {

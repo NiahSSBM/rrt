@@ -1,5 +1,5 @@
 use crate::mesh::{Mesh3D, Triangle};
-use crate::shader::{Shader, Vertex3D};
+use crate::shader::{AdditionalShaderProperties, Shader, Vertex3D};
 use bitstream_io::{ByteRead, ByteReader, LittleEndian};
 use color::palette::css;
 use gltf::buffer::View;
@@ -9,11 +9,15 @@ use gltf::{Semantic, import_buffers};
 use image::buffer::ConvertBuffer;
 use image::codecs::png::PngDecoder;
 use image::{ColorType, ImageBuffer, ImageDecoder, Luma, LumaA, Rgb, Rgba};
-use nalgebra::{Rotation3, Transform3, Vector3, max};
+use nalgebra::{
+    Matrix4, Rotation3, Scale, Scale3, Similarity, Similarity3, TGeneral, Transform3, Translation3,
+    Vector3, convert, max, try_convert,
+};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 pub struct Object {
@@ -22,6 +26,7 @@ pub struct Object {
     pub mesh: Option<Arc<Mutex<Mesh3D>>>,
     pub shader: Option<Shader>,
     pub transform: Transform3<f32>,
+    pub actual_transform: Transform3<f32>,
     pub children: Vec<Object>,
 }
 
@@ -33,6 +38,7 @@ impl Object {
             mesh: None,
             shader: None,
             transform: Transform3::identity(),
+            actual_transform: Transform3::identity(),
             children: Vec::new(),
         }
     }
@@ -44,6 +50,7 @@ impl Object {
             mesh: None,
             shader: Some(shader),
             transform: Transform3::identity(),
+            actual_transform: Transform3::identity(),
             children: Vec::new(),
         }
     }
@@ -55,21 +62,62 @@ impl Object {
             shader: Some(mesh.shader.clone()),
             mesh: Some(Arc::new(Mutex::new((mesh)))),
             transform: Transform3::identity(),
+            actual_transform: Transform3::identity(),
             children: Vec::new(),
         }
     }
 
-    pub fn translate(&mut self, vector: Vector3<f32>) {
-        self.transform = Transform3::from_matrix_unchecked(
-            self.transform
-                .to_homogeneous()
-                .prepend_translation(&vector)
-                .into(),
-        );
+    pub fn translate(&mut self, translation: Translation3<f32>) {
+        self.transform *= translation;
+        self.actual_transform *= translation;
+        self.update_child_transforms(translation.to_homogeneous());
     }
 
     pub fn rotate(&mut self, rotation: Rotation3<f32>) {
         self.transform *= rotation;
+        self.actual_transform *= rotation;
+        self.update_child_transforms(rotation.to_homogeneous());
+    }
+
+    pub fn scale(&mut self, scale: Scale3<f32>) {
+        self.transform = Transform3::from_matrix_unchecked(
+            self.transform.to_homogeneous() * scale.to_homogeneous(),
+        );
+        self.actual_transform = Transform3::from_matrix_unchecked(
+            self.actual_transform.to_homogeneous() * scale.to_homogeneous(),
+        );
+        self.update_child_transforms(scale.to_homogeneous());
+    }
+
+    pub fn transform(&mut self, transform: Transform3<f32>) {
+        self.transform *= transform;
+        self.actual_transform *= transform;
+        self.update_child_transforms(transform.to_homogeneous());
+    }
+
+    /// Recursively updates only the View component of the perspective matrix on all children objects.
+    pub fn update_view(&self, view: [[f32; 4]; 4]) {
+        let descriptor = AdditionalShaderProperties::Perspective(
+            self.actual_transform.to_homogeneous().into(),
+            view,
+            Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
+        );
+        if self.mesh.is_some() {
+            let mut mesh = self.mesh.as_ref().unwrap().lock().unwrap();
+            mesh.shader.update_descriptor(descriptor);
+        }
+        for child in &self.children {
+            child.update_view(view);
+        }
+    }
+
+    /// Whenever an object transform is updated, all of its children inherit that change as well.
+    /// This recurses through all child objects and applies the same transformation.
+    fn update_child_transforms(&mut self, transform: Matrix4<f32>) {
+        for child in self.children.iter_mut() {
+            child.actual_transform *= Transform3::from_matrix_unchecked(transform);
+            child.update_child_transforms(transform);
+        }
     }
 
     /// If a path is set, and the file is a supported type (GLB or GLTF), the file is loaded into this objects children.
@@ -89,15 +137,14 @@ impl Object {
                 println!("Tried to load gltf without a shader!");
                 return;
             }
-            self.children = load_gltf(self.path.clone(), &mut self.shader.clone().unwrap())
+            self.children = load_gltf(self.path.clone(), &mut self.shader.clone().unwrap(), self.actual_transform);
         }
     }
 }
 
 /// Loads a GLTF or GLB file from a path and converts it to a Vector of compatible rrt::Objects.
 /// Also prints a tree of what is loaded.
-fn load_gltf(path: PathBuf, shader: &mut Shader) -> Vec<Object> {
-    let mut out: Vec<Object> = Vec::new();
+fn load_gltf(path: PathBuf, shader: &mut Shader, initial_transform: Transform3<f32>) -> Vec<Object> {
     println!("Loading GLTF {}", path.display());
 
     let (document, buffers, _images) = match gltf::import(path) {
@@ -139,13 +186,14 @@ fn load_gltf(path: PathBuf, shader: &mut Shader) -> Vec<Object> {
         }
     }
 
-    gltf_load_model(document, buffers, shader.clone())
+    gltf_load_model(document, buffers, shader.clone(), initial_transform)
 }
 
 fn gltf_load_model(
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     shader: Shader,
+    initial_transform: Transform3<f32>,
 ) -> Vec<Object> {
     let mut out: Vec<Object> = Vec::new();
     let buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
@@ -153,7 +201,12 @@ fn gltf_load_model(
 
     for scene in scenes {
         for root_node in scene.nodes() {
-            out.push(gltf_load_node(&root_node, &buffer, shader.clone()));
+            out.push(gltf_load_node(
+                &root_node,
+                &buffer,
+                shader.clone(),
+                initial_transform,
+            ));
         }
     }
     out
@@ -161,7 +214,12 @@ fn gltf_load_model(
 
 /// Recursively loades child nodes into an Object.
 /// Root node becomes the parent and child nodes are populated.
-fn gltf_load_node(node: &gltf::scene::Node, buffer: &gltf::buffer::Data, shader: Shader) -> Object {
+fn gltf_load_node(
+    node: &gltf::scene::Node,
+    buffer: &gltf::buffer::Data,
+    shader: Shader,
+    parent_transform: Transform3<f32>,
+) -> Object {
     // Each node may contain multiple accessors of each type for a mesh, so these are Vectors
     let index_data = get_index_accessors(node);
     let normal_data = get_semantic(node, Semantic::Normals);
@@ -300,20 +358,38 @@ fn gltf_load_node(node: &gltf::scene::Node, buffer: &gltf::buffer::Data, shader:
         .collect();
 
     let mesh: Option<Arc<Mutex<Mesh3D>>> = if !vertices.is_empty() {
-        Some(Arc::new(Mutex::new(Mesh3D::new(vertices, triangles, shader.clone()))))
+        Some(Arc::new(Mutex::new(Mesh3D::new(
+            vertices,
+            triangles,
+            shader.clone(),
+        ))))
     } else {
         None
     };
+
+    let transform: Transform3<f32> =
+        Transform3::from_matrix_unchecked(node.transform().matrix().into());
+    let actual_transform = parent_transform * transform;
+
+    println!(
+        "Transform: {:?}",
+        try_convert::<nalgebra::Transform<f32, TGeneral, 3>, Similarity3<f32>>(transform)
+    );
+    println!(
+        "Actual transform: {:?}",
+        try_convert::<nalgebra::Transform<f32, TGeneral, 3>, Similarity3<f32>>(actual_transform)
+    );
 
     let out: Object = Object {
         path: Default::default(),
         is_loaded: true,
         mesh,
         shader: Some(shader.clone()),
-        transform: Transform3::from_matrix_unchecked(node.transform().matrix().into()),
+        transform,
+        actual_transform,
         children: node
             .children()
-            .map(|node| gltf_load_node(&node, buffer, shader.clone()))
+            .map(|node| gltf_load_node(&node, buffer, shader.clone(), actual_transform))
             .collect(),
     };
     out
