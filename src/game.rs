@@ -158,9 +158,10 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         //"models/smoothsphere.glb",
         //"models/hqsphere.glb",
         //"models/smoothhqsphere.glb",
-        "models/scaletest.glb",
+        //"models/scaletest.glb",
         //"models/trex.glb",
-        //"models/macaw.glb",
+        "models/macaw.glb",
+        //"models/scene.gltf",
     ];
     let mut objects = vec![];
     for path in paths {
@@ -169,9 +170,10 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
 
     let mut i = 0;
     for mut object in objects {
-        object.translate(Translation3::new(-1.0 + i as f32, 1.0, -3.0));
-        //object.scale(Scale3::new(1.5, 1.0, 1.0));
-        //object.rotate(Rotation3::from_axis_angle(&Vector3::y_axis(), PI / 2.0));
+        object.translate(Translation3::new(i as f32, 4.0, -4.0));
+        object.scale(Scale3::new(5.0, 5.0, 5.0));
+        //object.rotate(Rotation3::from_axis_angle(&Vector3::z_axis(), PI / 1.0));
+        object.rotate(Rotation3::from_axis_angle(&Vector3::x_axis(), PI / 1.0));
 
         object.load();
 

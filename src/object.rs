@@ -335,9 +335,11 @@ fn gltf_load_node(
             ComponentType::F32 => load_accessor_data::<f32>(&accessor, &buffer),
         });
     }
+    println!("Tecoords: {:?}", texcoords);
 
     let indices = indices.as_chunks::<3>().0;
     let normals = normals.as_chunks::<3>().0;
+    let texcoords = texcoords.as_chunks::<2>().0;
     let vertices: Vec<Vertex3D> = positions
         .as_chunks::<3>()
         .0
@@ -347,6 +349,7 @@ fn gltf_load_node(
             Vertex3D::new(
                 *position,
                 *normals.get(i).unwrap_or(&[0.0, 1.0, 0.0]),
+                *texcoords.get(i).unwrap_or(&[0.0, 0.0]),
                 color::AlphaColor::WHITE,
             )
         })
@@ -370,15 +373,6 @@ fn gltf_load_node(
     let transform: Transform3<f32> =
         Transform3::from_matrix_unchecked(node.transform().matrix().into());
     let actual_transform = parent_transform * transform;
-
-    println!(
-        "Transform: {:?}",
-        try_convert::<nalgebra::Transform<f32, TGeneral, 3>, Similarity3<f32>>(transform)
-    );
-    println!(
-        "Actual transform: {:?}",
-        try_convert::<nalgebra::Transform<f32, TGeneral, 3>, Similarity3<f32>>(actual_transform)
-    );
 
     let out: Object = Object {
         path: Default::default(),

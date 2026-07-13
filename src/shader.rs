@@ -105,15 +105,18 @@ pub struct Vertex3D {
     pub position: [f32; 3],
     #[format(R32G32B32_SFLOAT)]
     pub normal: [f32; 3],
+    #[format(R32G32_SFLOAT)]
+    pub tex_coord: [f32; 2],
     #[format(R32G32B32A32_SFLOAT)]
     pub color: [f32; 4],
 }
 
 impl Vertex3D {
-    pub fn new(position: [f32; 3], normal: [f32; 3], color: AlphaColor<Srgb>) -> Self {
+    pub fn new(position: [f32; 3], normal: [f32; 3], tex_coord: [f32; 2], color: AlphaColor<Srgb>) -> Self {
         Self {
             position,
             normal,
+            tex_coord,
             color: color.components,
         }
     }

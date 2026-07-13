@@ -578,7 +578,7 @@ fn create_temp_mesh(
     tri_shaders.build(queue, resources, flight_id);
 
     let model_verts: Vec<Vertex3D> =
-        vec![Vertex3D::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], color::palette::css::BLACK)];
+        vec![Vertex3D::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0], color::palette::css::BLACK)];
     let triangle: Vec<Triangle> = vec![Triangle::new([1, 2, 3], [0.0, 1.0, 0.0])];
 
     Arc::new(Mutex::new(Mesh3D::new(
