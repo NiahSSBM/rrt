@@ -86,8 +86,8 @@ impl AdditionalShaderProperties {
     }
 
     fn texture_default() -> Self {
-        Self::Texture(image::ImageBuffer::from_fn(64, 64, |_, _| {
-            image::Rgba([255, 255, 255, 255])
+        Self::Texture(ImageBuffer::from_fn(64, 64, |_, _| {
+            Rgba([255, 255, 255, 255])
         }))
     }
 }

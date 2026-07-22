@@ -25,5 +25,6 @@ void main() {
 
     vec3 sun_position = vec3(sin(time), 0.0, cos(time));
 
-    fragColor = clamp(color * dot(normal, sun_position), vec4(0.0), vec4(1.0)) + 0.02;
+    //fragColor = clamp(color * dot(normal, sun_position), vec4(0.0), vec4(1.0)) + 0.02;
+    fragColor = vec4(color);
 }

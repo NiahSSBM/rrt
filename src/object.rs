@@ -1,12 +1,15 @@
 use crate::mesh::{Mesh3D, Triangle};
 use crate::shader::{AdditionalShaderProperties, Shader, Vertex3D};
 use bitstream_io::{ByteRead, ByteReader, LittleEndian};
+use color::Rgba8;
 use color::palette::css;
 use gltf::buffer::View;
 use gltf::image::Source;
 use gltf::json::accessor::{ComponentType, Type};
-use gltf::{Semantic, import_buffers};
+use gltf::json::image::MimeType;
+use gltf::{Buffer, Material, Semantic, import_buffers};
 use image::buffer::ConvertBuffer;
+use image::codecs::jpeg::JpegDecoder;
 use image::codecs::png::PngDecoder;
 use image::{ColorType, ImageBuffer, ImageDecoder, Luma, LumaA, Rgb, Rgba};
 use nalgebra::{
@@ -17,6 +20,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::primitive;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -137,14 +141,22 @@ impl Object {
                 println!("Tried to load gltf without a shader!");
                 return;
             }
-            self.children = load_gltf(self.path.clone(), &mut self.shader.clone().unwrap(), self.actual_transform);
+            self.children = load_gltf(
+                self.path.clone(),
+                &mut self.shader.clone().unwrap(),
+                self.actual_transform,
+            );
         }
     }
 }
 
 /// Loads a GLTF or GLB file from a path and converts it to a Vector of compatible rrt::Objects.
 /// Also prints a tree of what is loaded.
-fn load_gltf(path: PathBuf, shader: &mut Shader, initial_transform: Transform3<f32>) -> Vec<Object> {
+fn load_gltf(
+    path: PathBuf,
+    shader: &mut Shader,
+    initial_transform: Transform3<f32>,
+) -> Vec<Object> {
     println!("Loading GLTF {}", path.display());
 
     let (document, buffers, _images) = match gltf::import(path) {
@@ -165,14 +177,6 @@ fn load_gltf(path: PathBuf, shader: &mut Shader, initial_transform: Transform3<f
     println!("Textures loaded: {}", document.textures().count());
     for texture in document.textures() {
         print_texture(&texture, 1);
-        match texture.source().source() {
-            Source::View { view, mime_type } => {
-                shader.set_texture(
-                    gltf_load_image_from_view(&view, buffers.get(0).unwrap()).unwrap(),
-                );
-            }
-            Source::Uri { uri, mime_type } => {}
-        }
     }
 
     for scene in document.scenes() {
@@ -182,11 +186,17 @@ fn load_gltf(path: PathBuf, shader: &mut Shader, initial_transform: Transform3<f
         );
         println!("Scene has {} nodes", scene.nodes().len());
         for node in scene.nodes() {
-            walk_gltf_nodes(&node, 0);
+            //walk_gltf_nodes(&node, 0);
         }
     }
 
-    gltf_load_model(document, buffers, shader.clone(), initial_transform)
+    gltf_load_model(
+        document,
+        buffers,
+        shader.clone(),
+        initial_transform,
+        &Vec::new(),
+    )
 }
 
 fn gltf_load_model(
@@ -194,6 +204,7 @@ fn gltf_load_model(
     buffers: Vec<gltf::buffer::Data>,
     shader: Shader,
     initial_transform: Transform3<f32>,
+    textures: &Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>,
 ) -> Vec<Object> {
     let mut out: Vec<Object> = Vec::new();
     let buffer = buffers.get(0).unwrap(); // Not sure what to do with the other buffers
@@ -206,6 +217,7 @@ fn gltf_load_model(
                 &buffer,
                 shader.clone(),
                 initial_transform,
+                &textures,
             ));
         }
     }
@@ -217,8 +229,9 @@ fn gltf_load_model(
 fn gltf_load_node(
     node: &gltf::scene::Node,
     buffer: &gltf::buffer::Data,
-    shader: Shader,
+    mut shader: Shader,
     parent_transform: Transform3<f32>,
+    textures: &Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>,
 ) -> Object {
     // Each node may contain multiple accessors of each type for a mesh, so these are Vectors
     let index_data = get_index_accessors(node);
@@ -256,7 +269,7 @@ fn gltf_load_node(
     }
 
     let mut normals: Vec<f32> = Vec::new();
-    for accessor in normal_data {
+    for (_, accessor) in normal_data {
         normals.extend(match accessor.data_type() {
             ComponentType::I8 => load_accessor_data::<i8>(&accessor, &buffer)
                 .iter()
@@ -283,7 +296,7 @@ fn gltf_load_node(
     }
 
     let mut positions: Vec<f32> = Vec::new();
-    for accessor in position_data {
+    for (primitive, accessor) in position_data {
         positions.extend(match accessor.data_type() {
             ComponentType::I8 => load_accessor_data::<i8>(&accessor, &buffer)
                 .iter()
@@ -307,10 +320,15 @@ fn gltf_load_node(
                 .collect(),
             ComponentType::F32 => load_accessor_data::<f32>(&accessor, &buffer),
         });
+
+        shader.set_texture(
+            get_primary_texture(&primitive.material(), buffer)
+                .unwrap_or_else(|| ImageBuffer::from_fn(64, 64, |_, _| Rgba([255, 255, 255, 255]))),
+        );
     }
 
     let mut texcoords: Vec<f32> = Vec::new();
-    for accessor in texcoord_data {
+    for (_, accessor) in texcoord_data {
         texcoords.extend(match accessor.data_type() {
             ComponentType::I8 => load_accessor_data::<i8>(&accessor, &buffer)
                 .iter()
@@ -335,7 +353,6 @@ fn gltf_load_node(
             ComponentType::F32 => load_accessor_data::<f32>(&accessor, &buffer),
         });
     }
-    println!("Tecoords: {:?}", texcoords);
 
     let indices = indices.as_chunks::<3>().0;
     let normals = normals.as_chunks::<3>().0;
@@ -383,10 +400,46 @@ fn gltf_load_node(
         actual_transform,
         children: node
             .children()
-            .map(|node| gltf_load_node(&node, buffer, shader.clone(), actual_transform))
+            .map(|node| gltf_load_node(&node, buffer, shader.clone(), actual_transform, &textures))
             .collect(),
     };
     out
+}
+
+/// Selects a primary texture from a material and loads it.
+/// Prefers PBR specular glossiness textures, then PBR metallic roughness textures.
+/// Otherwise, returns None.
+fn get_primary_texture(
+    material: &Material,
+    buffer: &gltf::buffer::Data,
+) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let source: Option<Source>;
+    if let Some(sg) = material.pbr_specular_glossiness() {
+        if let Some(t) = sg.specular_glossiness_texture() {
+            source = Some(t.texture().source().source());
+        } else {
+            source = None;
+        }
+    } else {
+        if let Some(t) = material.pbr_metallic_roughness().base_color_texture() {
+            source = Some(t.texture().source().source());
+        } else {
+            source = None;
+        }
+    }
+    if let Some(s) = source {
+        match s {
+            Source::View { view, mime_type } => {
+                Some(gltf_load_image_from_view(&view, buffer, mime_type).unwrap())
+            }
+            Source::Uri { .. } => {
+                println!("Textures from URIs are unimplemented!");
+                None
+            }
+        }
+    } else {
+        None
+    }
 }
 
 fn load_accessor_data<T: bitstream_io::Primitive>(
@@ -435,9 +488,14 @@ fn load_accessor_data<T: bitstream_io::Primitive>(
 fn gltf_load_image_from_view(
     view: &View,
     buffer: &gltf::buffer::Data,
+    mime_type: &str,
 ) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let source = std::io::Cursor::new(&buffer[view.offset()..view.offset() + view.length()]);
-    let decoder = PngDecoder::new(source).unwrap();
+    let decoder: Box<dyn ImageDecoder> = match mime_type {
+        "image/png" => Box::new(PngDecoder::new(source).unwrap()),
+        "image/jpeg" => Box::new(JpegDecoder::new(source).unwrap()),
+        _ => panic!("Unknown image type {mime_type}"),
+    };
     let color_type = decoder.color_type();
     let dimensions = decoder.dimensions();
     let mut destination: Vec<u8> = vec![0; decoder.total_bytes() as usize];
@@ -449,7 +507,7 @@ fn gltf_load_image_from_view(
                     dimensions.1,
                     destination,
                 ) {
-                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                    Some::<ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
                 } else {
                     None
                 }
@@ -460,7 +518,7 @@ fn gltf_load_image_from_view(
                     dimensions.1,
                     destination,
                 ) {
-                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                    Some::<ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
                 } else {
                     None
                 }
@@ -471,7 +529,7 @@ fn gltf_load_image_from_view(
                     dimensions.1,
                     destination,
                 ) {
-                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                    Some::<ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
                 } else {
                     None
                 }
@@ -482,7 +540,7 @@ fn gltf_load_image_from_view(
                     dimensions.1,
                     destination,
                 ) {
-                    Some::<image::ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
+                    Some::<ImageBuffer<Rgba<u8>, Vec<u8>>>(image.convert())
                 } else {
                     None
                 }
@@ -508,16 +566,17 @@ fn gltf_load_image_from_view(
     }
 }
 
-/// Gets the specified semantic from only the supplied node. Does not return the semantics of child nodes.
+/// Gets the specified semantic and associated primitive from only the supplied node.
+/// Does not return the semantics of child nodes.
 fn get_semantic<'a>(
     node: &gltf::Node<'a>,
-    desired_semantic: gltf::Semantic,
-) -> Vec<gltf::Accessor<'a>> {
+    desired_semantic: Semantic,
+) -> Vec<(gltf::Primitive<'a>, gltf::Accessor<'a>)> {
     let mut accessors = Vec::new();
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
             if let Some(accessor) = primitive.get(&desired_semantic) {
-                accessors.push(accessor);
+                accessors.push((primitive, accessor));
             }
         }
     }
@@ -649,8 +708,23 @@ fn print_material(material: &gltf::Material, depth: usize) {
     }
     println!("{:depth$}Alpha mode {:?}", "", material.alpha_mode());
     println!("{:depth$}Double sided {}", "", material.double_sided());
-    //println!("{:depth$}Metallic roughness {}", "", ""); // TODO
-    //println!("{:depth$}Specular glossiness {}", "" , ""); // TODO
+    println!(
+        "{:depth$}Metallic roughness {:?}",
+        "",
+        material
+            .pbr_metallic_roughness()
+            .metallic_roughness_texture()
+            .is_some()
+    );
+    println!(
+        "{:depth$}Specular glossiness {:?}",
+        "",
+        if let Some(pbr) = material.pbr_specular_glossiness() {
+            pbr.specular_glossiness_texture().is_some()
+        } else {
+            false
+        }
+    );
     println!(
         "{:depth$}Normal texture {}",
         "",
