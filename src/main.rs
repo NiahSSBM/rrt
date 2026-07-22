@@ -3,8 +3,8 @@ mod mesh;
 mod object;
 mod scene;
 mod shader;
-mod vgfx;
 mod shader_cache;
+mod vgfx;
 
 use crate::game::{GameData, GameEvent, RenderEvent};
 use std::sync::{Mutex, mpsc};
@@ -87,7 +87,6 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-
                         // Calculate framerate
                         let fs_lock = FRAMES_SINCE_LAST_FRAMETIME_UPDATE.try_lock();
                         match fs_lock {
@@ -138,9 +137,6 @@ impl ApplicationHandler for App {
                             Err(_) => (),
                         }
 
-                        let resources = window_context.resources.clone();
-                        let _flight = resources.flight(window_context.flight_id).unwrap();
-
                         if window_context.requested_resize || window_context.recreate_swapchain {
                             window_context.recreate_swapchain = false;
                             window_context.recreate_swapchain();
@@ -148,6 +144,12 @@ impl ApplicationHandler for App {
                             if window_context.requested_resize {
                                 window_context.requested_resize = false;
                                 window_context.resize_window();
+                                let _ = window_context.game_thread_sender.send(
+                                    GameEvent::WindowResized((
+                                        window_context.viewport.extent[0],
+                                        window_context.viewport.extent[1],
+                                    )),
+                                );
                             }
                         }
 

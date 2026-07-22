@@ -100,18 +100,18 @@ impl Object {
     }
 
     /// Recursively updates only the View component of the perspective matrix on all children objects.
-    pub fn update_view(&self, view: [[f32; 4]; 4]) {
+    pub fn update_perspective(&self, view: [[f32; 4]; 4], aspect: f32, fov: f32, near: f32, far: f32) {
         let descriptor = AdditionalShaderProperties::Perspective(
             self.actual_transform.to_homogeneous().into(),
             view,
-            Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
+            Matrix4::new_perspective(aspect, fov, near, far).into(),
         );
         if self.mesh.is_some() {
             let mut mesh = self.mesh.as_ref().unwrap().lock().unwrap();
             mesh.shader.update_descriptor(descriptor);
         }
         for child in &self.children {
-            child.update_view(view);
+            child.update_perspective(view, aspect, fov, near, far);
         }
     }
 

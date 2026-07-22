@@ -41,6 +41,7 @@ pub enum GameEvent {
     GameClose,
     CursorMoved((f64, f64)),
     KeyEvent(KeyEvent),
+    WindowResized((f32, f32)),
 }
 
 #[derive(PartialEq)]
@@ -50,7 +51,6 @@ enum GameStatus {
 }
 
 struct Camera {
-    perspective: [[[f32; 4]; 4]; 3],
     position: Point3<f32>,
     front: Vector3<f32>,
     up: Vector3<f32>,
@@ -58,6 +58,8 @@ struct Camera {
     world_up: Vector3<f32>,
     yaw: f32,
     pitch: f32,
+    fov: f32,
+    aspect: f32,
 }
 
 pub struct GameData {
@@ -104,16 +106,6 @@ impl GameState {
 impl Camera {
     fn new() -> Self {
         Self {
-            perspective: [
-                Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.0)).into(),
-                Matrix4::look_at_rh(
-                    &Point3::new(4.0, 0.0, 0.0),  // Where the camera is
-                    &Point3::new(0.0, 0.0, 0.0),  // Where the camera looks
-                    &Vector3::new(0.0, 1.0, 0.0), // What axis is up
-                )
-                .into(),
-                Matrix4::new_perspective(800.0 / 600.0, 800.0 / 600.0, 0.1, 100.0).into(),
-            ],
             position: Point3::origin(),
             front: *Vector3::z_axis(),
             up: *Vector3::y_axis(),
@@ -121,6 +113,8 @@ impl Camera {
             world_up: *Vector3::y_axis(),
             yaw: -90.0,
             pitch: 0.0,
+            fov: 800.0 / 600.0,
+            aspect: 800.0 / 600.0,
         }
     }
 }
@@ -142,11 +136,7 @@ fn game_init(data: &mut GameData, state: &mut GameState) {
         stage_pipeline.clone(),
         Some(shader_cache.clone()),
         vec![
-            AdditionalShaderProperties::Perspective(
-                state.camera.perspective[0],
-                state.camera.perspective[1],
-                state.camera.perspective[2],
-            ),
+            AdditionalShaderProperties::perspective_default(),
             AdditionalShaderProperties::Texture(data.persistent_textures.get(0).unwrap().clone()),
         ],
     );
@@ -239,6 +229,9 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
                         PhysicalKey::Unidentified(_) => (),
                     }
                 }
+            },
+            GameEvent::WindowResized((w, h)) => {
+                state.camera.aspect = w / h;
             }
         }
     }
@@ -276,13 +269,14 @@ fn physics_update(data: &GameData, state: &mut GameState) -> GameStatus {
     }
 
     for object in &state.objects {
-        object.update_view(
+        object.update_perspective(
             Matrix4::look_at_rh(
                 &state.camera.position,
                 &(state.camera.position + state.camera.front),
                 &state.camera.up,
             )
             .into(),
+            state.camera.aspect, state.camera.fov, 0.1, 100.0
         )
     }
 

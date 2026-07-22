@@ -77,7 +77,7 @@ pub enum AdditionalShaderProperties {
 }
 
 impl AdditionalShaderProperties {
-    fn perspective_default() -> Self {
+    pub fn perspective_default() -> Self {
         Self::Perspective(
             Matrix4::identity().into(),
             Matrix4::identity().into(),
@@ -602,8 +602,8 @@ impl Shader {
         (descriptor_sets, pipeline_layout)
     }
 
-    // Searches for an already existing property and replaces it
-    // If there is no property, it is added
+    /// Searches for an already existing property and replaces it.
+    /// If there is no property, it is added.
     pub fn update_descriptor(&mut self, shader_property: AdditionalShaderProperties) {
         let mut existing_index = Some(0);
         for (i, property) in self.additional_properties.iter().enumerate() {
